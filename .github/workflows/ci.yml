@@ -2,9 +2,9 @@ name: CI/CD Pipeline (Zero Docker)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 20_10_dev ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, 20_10_dev ]
 
 jobs:
   test-and-build:
