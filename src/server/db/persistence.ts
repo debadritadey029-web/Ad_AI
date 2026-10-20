@@ -30,6 +30,25 @@ export interface SerializedDataStore {
   otpCodes?: Array<[string, any]>;
 }
 
+export function serializeDataStore(store: DataStore): SerializedDataStore {
+  return {
+    version: 1,
+    lastSavedAt: new Date().toISOString(),
+    users: Array.from(store.users.entries()),
+    organizations: Array.from(store.organizations.entries()),
+    memberships: Array.from(store.memberships.entries()),
+    invitations: Array.from(store.invitations.entries()),
+    providerConnections: Array.from(store.providerConnections.entries()),
+    campaigns: Array.from(store.campaigns.entries()),
+    proposals: Array.from(store.proposals.entries()),
+    creatives: Array.from(store.creatives.entries()),
+    brandProfiles: Array.from(store.brandProfiles.entries()),
+    leads: Array.from(store.leads.entries()),
+    auditLogs: store.auditLogs,
+    otpCodes: store.otpCodes ? Array.from(store.otpCodes.entries()) : [],
+  };
+}
+
 export class PersistenceManager {
   private static instance: PersistenceManager;
   private saveTimeout: NodeJS.Timeout | null = null;
@@ -89,22 +108,7 @@ export class PersistenceManager {
 
     try {
       this.ensureDataDirectory();
-      const payload: SerializedDataStore = {
-        version: 1,
-        lastSavedAt: new Date().toISOString(),
-        users: Array.from(store.users.entries()),
-        organizations: Array.from(store.organizations.entries()),
-        memberships: Array.from(store.memberships.entries()),
-        invitations: Array.from(store.invitations.entries()),
-        providerConnections: Array.from(store.providerConnections.entries()),
-        campaigns: Array.from(store.campaigns.entries()),
-        proposals: Array.from(store.proposals.entries()),
-        creatives: Array.from(store.creatives.entries()),
-        brandProfiles: Array.from(store.brandProfiles.entries()),
-        leads: Array.from(store.leads.entries()),
-        auditLogs: store.auditLogs,
-        otpCodes: store.otpCodes ? Array.from(store.otpCodes.entries()) : [],
-      };
+      const payload = serializeDataStore(store);
 
       const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
       fs.writeFileSync(tempFile, JSON.stringify(payload, null, 2), 'utf-8');

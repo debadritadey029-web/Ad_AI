@@ -21,13 +21,42 @@ import {
   DataStore,
 } from './types.js';
 import { createAuditLogEntry } from '../services/audit.js';
-import { PersistenceManager } from './persistence.js';
+import { PersistenceManager, serializeDataStore, SerializedDataStore } from './persistence.js';
+import { loadSupabaseSnapshot, saveSupabaseSnapshot } from './supabase.js';
 import { scryptSync } from 'node:crypto';
 
 export type { DataStore };
 
 export function persistCurrentStore(): void {
   PersistenceManager.getInstance().scheduleSave(globalStore);
+  void saveSupabaseSnapshot(serializeDataStore(globalStore));
+}
+
+function applySerializedStore(store: DataStore, snapshot: SerializedDataStore): void {
+  store.users = new Map(snapshot.users || []);
+  store.organizations = new Map(snapshot.organizations || []);
+  store.memberships = new Map(snapshot.memberships || []);
+  store.invitations = new Map(snapshot.invitations || []);
+  store.providerConnections = new Map(snapshot.providerConnections || []);
+  store.campaigns = new Map(snapshot.campaigns || []);
+  store.proposals = new Map(snapshot.proposals || []);
+  store.creatives = new Map(snapshot.creatives || []);
+  store.brandProfiles = new Map(snapshot.brandProfiles || []);
+  store.leads = new Map(snapshot.leads || []);
+  store.auditLogs = snapshot.auditLogs || [];
+  store.sessions = new Map();
+  store.otpCodes = new Map(snapshot.otpCodes || []);
+  store.twoFactorChallenges = new Map();
+  seedTestSessions(store);
+}
+
+export async function hydrateGlobalStoreFromSupabase(): Promise<boolean> {
+  const snapshot = await loadSupabaseSnapshot();
+  if (!snapshot || !snapshot.users?.length || !snapshot.organizations?.length) return false;
+
+  applySerializedStore(globalStore, snapshot);
+  console.log('[Supabase] Application state hydrated from Supabase.');
+  return true;
 }
 
 export function initializeStore(): DataStore {

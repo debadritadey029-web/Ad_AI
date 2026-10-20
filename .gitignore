@@ -4,5 +4,8 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
+
+# Local environment files and secrets
+.env
+.env.*
 !.env.example

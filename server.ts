@@ -8,6 +8,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { apiRouter } from './src/server/routes.js';
+import { hydrateGlobalStoreFromSupabase, persistCurrentStore } from './src/server/db/store.js';
+import { isSupabaseServerConfigured } from './src/server/db/supabase.js';
 import { securityHeaders, errorHandler } from './src/server/middleware/security.js';
 
 dotenv.config();
@@ -29,6 +31,14 @@ app.use('/api', apiRouter);
 app.use(errorHandler);
 
 async function startServer() {
+  if (isSupabaseServerConfigured()) {
+    const hydrated = await hydrateGlobalStoreFromSupabase();
+    if (!hydrated) {
+      console.log('[Supabase] No application snapshot found; uploading the existing store as the initial snapshot.');
+      persistCurrentStore();
+    }
+  }
+
   if (process.env.NODE_ENV === 'production') {
     // Serve production build from dist
     app.use(express.static(path.resolve(__dirname, 'dist')));
