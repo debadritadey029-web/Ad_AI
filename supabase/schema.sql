@@ -7,6 +7,16 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- Server-side snapshot used by the existing application store adapter.
+-- Access is restricted to the service-role key (which bypasses RLS).
+CREATE TABLE IF NOT EXISTS public.application_state (
+  id TEXT PRIMARY KEY,
+  snapshot JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.application_state ENABLE ROW LEVEL SECURITY;
+
 -- 2. Organizations Table
 CREATE TABLE IF NOT EXISTS public.organizations (
   id TEXT PRIMARY KEY,
