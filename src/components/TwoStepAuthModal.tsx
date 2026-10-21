@@ -499,7 +499,6 @@ export const TwoStepAuthModal: React.FC<TwoStepAuthModalProps> = ({ isOpen, onCl
                 )}
 
                 {!isSupabaseConfigured() && (
-                {/* Tester Quick Pre-fill helpers */}
                 <div className="mt-4 pt-4 border-t border-slate-800/80">
                   <p className="text-[11px] font-semibold text-slate-400 mb-2">
                     Quick-Fill Authorized Test Profiles (Instant 2-Step Testing):
