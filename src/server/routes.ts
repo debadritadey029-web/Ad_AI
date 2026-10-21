@@ -218,6 +218,9 @@ async function resolveContext(req: ContextRequest, res: Response, next: NextFunc
   return next();
 }
 
+// Apply authentication and tenant context before applying write availability gates.
+apiRouter.use(resolveContext);
+
 // In Vercel, block writes to domains that have not yet been migrated to durable
 // transactional repositories. Never acknowledge a process-local mutation as durable.
 apiRouter.use((req: ContextRequest, res: Response, next: NextFunction) => {
@@ -226,15 +229,18 @@ apiRouter.use((req: ContextRequest, res: Response, next: NextFunction) => {
   const durableCampaignWrite =
     (req.method === 'POST' && req.path === '/campaigns') ||
     (req.method === 'PATCH' && /^\/campaigns\/[^/]+\/status$/.test(req.path));
+  if (durableCampaignWrite && !isDurableCampaignPersistenceEnabled()) {
+    return res.status(503).json({
+      error: 'DURABLE_CAMPAIGN_STORAGE_NOT_CONFIGURED',
+      message: 'Campaign writes are disabled on Vercel until Supabase durable persistence is configured. No change was applied.',
+    });
+  }
   if (durableCampaignWrite) return next();
   return res.status(503).json({
     error: 'DURABLE_PERSISTENCE_NOT_IMPLEMENTED',
     message: 'This write is temporarily disabled in serverless staging until its tenant-scoped transactional repository is deployed. No change was applied.',
   });
 });
-
-// Apply context resolution to all protected API routes
-apiRouter.use(resolveContext);
 
 // ---------------------------------------------------------------------------
 // 1. Two-Step Authentication & OTP Endpoints (Email & Phone)
