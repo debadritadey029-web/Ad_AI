@@ -82,7 +82,7 @@ export const Navbar: React.FC = () => {
           </div>
         )}
 
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2 sm:gap-4">
           {/* Brand & Mobile Hamburger */}
           <div className="flex items-center gap-3">
             <button
@@ -111,9 +111,9 @@ export const Navbar: React.FC = () => {
           </div>
 
           {/* Controls: Org, User/Role, Language, Emergency Stop */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3 min-w-0 max-w-full">
             {/* Organization Selector */}
-            <div className="flex items-center gap-1.5 bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs">
+            <div className="hidden sm:flex items-center gap-1.5 bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs max-w-full">
               <Building2 className="w-3.5 h-3.5 text-blue-400" />
               <select
                 aria-label="Switch active organization"
@@ -204,7 +204,7 @@ export const Navbar: React.FC = () => {
               aria-label={isEmergency ? 'Release Emergency Stop' : 'Trigger Emergency Stop'}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm ${
                 isEmergency
-                  ? 'bg-red-600 hover:bg-red-700 text-white animate-bounce'
+                  ? 'bg-red-600 hover:bg-red-700 text-white'
                   : 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30'
               }`}
             >
