@@ -28,6 +28,10 @@ import { scryptSync } from 'node:crypto';
 export type { DataStore };
 
 export function persistCurrentStore(): void {
+  // Vercel instances are ephemeral and can execute concurrently. A whole-state
+  // JSON snapshot is not a durable database and last-writer-wins upserts can erase
+  // another instance's changes. Serverless writes must use a domain repository.
+  if (process.env.VERCEL) return;
   PersistenceManager.getInstance().scheduleSave(globalStore);
   void saveSupabaseSnapshot(serializeDataStore(globalStore));
 }
