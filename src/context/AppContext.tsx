@@ -101,7 +101,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
-    return localStorage.getItem('advantage_session_token') || 'test_token_sarah_apex';
+    return localStorage.getItem('advantage_session_token');
   });
 
   const authFetch = useCallback(
@@ -140,10 +140,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setPermissions(data.permissions || []);
         setAvailableUsers(data.availableUsers || []);
         setAvailableOrgs(data.availableOrgs || []);
-        if (data.sessionToken) {
-          setSessionToken(data.sessionToken);
-          localStorage.setItem('advantage_session_token', data.sessionToken);
-        }
+      } else if (res.status === 401 || res.status === 403) {
+        setUser(null);
+        setCurrentOrg(null);
+        setMembership(null);
+        setPermissions([]);
+        setAvailableUsers([]);
+        setAvailableOrgs([]);
+        setShowAuthModal(true);
+        localStorage.removeItem('advantage_session_token');
+        setSessionToken(null);
       }
     } catch (err) {
       console.error('Failed to load auth context:', err);
@@ -254,7 +260,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(true);
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseStatusInfo | null>(null);
 
   const checkSupabaseStatus = useCallback(async () => {
