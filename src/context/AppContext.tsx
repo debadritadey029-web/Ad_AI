@@ -5,6 +5,7 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { TRANSLATIONS, SupportedLanguage, TranslationDictionary } from '../i18n/translations.js';
+import { getSupabaseBrowserClient, isSupabaseConfigured } from '../lib/supabase.js';
 
 export interface User {
   id: string;
@@ -101,13 +102,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
-    return localStorage.getItem('advantage_session_token');
+    return isSupabaseConfigured ? null : localStorage.getItem('advantage_session_token');
   });
 
   const authFetch = useCallback(
     async (url: string, init: RequestInit = {}): Promise<Response> => {
       const headers = new Headers(init.headers || {});
-      if (sessionToken && !headers.has('Authorization')) {
+      if (isSupabaseConfigured) {
+        const { data } = await getSupabaseBrowserClient().auth.getSession();
+        const accessToken = data.session?.access_token;
+        if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+      } else if (sessionToken && !headers.has('Authorization')) {
         headers.set('Authorization', `Bearer ${sessionToken}`);
       }
       if (currentOrg?.id && !headers.has('x-organization-id')) {
@@ -128,8 +133,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const refreshContext = useCallback(async () => {
     try {
       const headers: Record<string, string> = {};
-      if (sessionToken) {
-        headers['Authorization'] = `Bearer ${sessionToken}`;
+      if (isSupabaseConfigured) {
+        const { data } = await getSupabaseBrowserClient().auth.getSession();
+        if (data.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
+      } else if (sessionToken) {
+        headers.Authorization = `Bearer ${sessionToken}`;
       }
       const res = await fetch('/api/auth/context', { headers });
       if (res.ok) {
@@ -140,6 +148,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setPermissions(data.permissions || []);
         setAvailableUsers(data.availableUsers || []);
         setAvailableOrgs(data.availableOrgs || []);
+        setShowAuthModal(false);
       } else if (res.status === 401 || res.status === 403) {
         setUser(null);
         setCurrentOrg(null);
@@ -148,8 +157,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setAvailableUsers([]);
         setAvailableOrgs([]);
         setShowAuthModal(true);
-        localStorage.removeItem('advantage_session_token');
-        setSessionToken(null);
+        if (isSupabaseConfigured) {
+          await getSupabaseBrowserClient().auth.signOut();
+        } else {
+          localStorage.removeItem('advantage_session_token');
+          setSessionToken(null);
+        }
       }
     } catch (err) {
       console.error('Failed to load auth context:', err);
@@ -281,6 +294,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const sendOtpRequest = async (target: string, channel: 'email' | 'phone') => {
     try {
+      if (isSupabaseConfigured) {
+        if (channel !== 'email') {
+          const message = 'SMS sign-in is not enabled yet. Please use email OTP.';
+          showToast(message, 'error');
+          return { success: false, message };
+        }
+        const { error } = await getSupabaseBrowserClient().auth.signInWithOtp({
+          email: target.trim().toLowerCase(),
+          options: { shouldCreateUser: false },
+        });
+        if (error) {
+          const message = error.message || 'Could not send email verification code.';
+          showToast(message, 'error');
+          return { success: false, message };
+        }
+        return { success: true, targetMasked: target.replace(/^(.{2}).*(@.*)$/, '$1••••$2'), message: 'A verification code has been sent to your email.' };
+      }
+
       const res = await fetch('/api/auth/otp/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -291,12 +322,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         showToast(data.message || data.error || 'Failed to send OTP code', 'error');
         return { success: false, message: data.message };
       }
-      return {
-        success: true,
-        devCode: data.devCode,
-        targetMasked: data.targetMasked,
-        message: data.message,
-      };
+      return { success: true, devCode: data.devCode, targetMasked: data.targetMasked, message: data.message };
     } catch {
       showToast('Failed to connect to authentication server', 'error');
       return { success: false, message: 'Network connection failure' };
@@ -306,6 +332,44 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const loginWithOtp = async (target: string, code: string, channel?: 'email' | 'phone') => {
     setIsLoading(true);
     try {
+      if (isSupabaseConfigured) {
+        if (channel === 'phone') {
+          showToast('SMS sign-in is not enabled yet. Please use email OTP.', 'error');
+          return false;
+        }
+        const { data, error } = await getSupabaseBrowserClient().auth.verifyOtp({
+          email: target.trim().toLowerCase(),
+          token: code,
+          type: 'email',
+        });
+        if (error || !data.session) {
+          showToast(error?.message || 'Invalid or expired verification code.', 'error');
+          return false;
+        }
+        setSessionToken(data.session.access_token);
+        localStorage.removeItem('advantage_session_token');
+        const contextResponse = await fetch('/api/auth/context', {
+          headers: { Authorization: `Bearer ${data.session.access_token}` },
+        });
+        if (!contextResponse.ok) {
+          await getSupabaseBrowserClient().auth.signOut();
+          setSessionToken(null);
+          const contextError = await contextResponse.json().catch(() => ({}));
+          showToast(contextError.message || 'Your account is not provisioned for an AdVantage AI organization. Contact your administrator.', 'error');
+          return false;
+        }
+        const context = await contextResponse.json();
+        setUser(context.user);
+        setCurrentOrg(context.currentOrg);
+        setMembership(context.membership);
+        setPermissions(context.permissions || []);
+        setAvailableUsers(context.availableUsers || []);
+        setAvailableOrgs(context.availableOrgs || []);
+        setShowAuthModal(false);
+        showToast('Signed in securely with Supabase.', 'success');
+        return true;
+      }
+
       const res = await fetch('/api/auth/otp/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -422,14 +486,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const logout = async () => {
     try {
-      await authFetch('/api/auth/logout', { method: 'POST' });
+      if (isSupabaseConfigured) {
+        await getSupabaseBrowserClient().auth.signOut();
+      } else {
+        await authFetch('/api/auth/logout', { method: 'POST' });
+      }
     } catch {
-      // Ignore network errors on logout
+      // Clear the local UI session even if the network is unavailable.
     }
     localStorage.removeItem('advantage_session_token');
     setSessionToken(null);
     setUser(null);
+    setCurrentOrg(null);
     setMembership(null);
+    setPermissions([]);
+    setAvailableUsers([]);
+    setAvailableOrgs([]);
     showToast('Logged out of session', 'info');
     setShowAuthModal(true);
   };
