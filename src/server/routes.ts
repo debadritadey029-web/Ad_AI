@@ -47,6 +47,8 @@ import {
   Organization,
   Membership,
   Session,
+  ProviderType,
+  CampaignStatus,
 } from './db/types.js';
 
 export const apiRouter = Router();
@@ -751,7 +753,7 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
   const budgetMinorUnits = toMinorUnits(Number(budgetAmount), campCurrency);
 
   // Validate provider minimum budget
-  const minValidation = validateCampaignMinBudget(provider, budgetMinorUnits, campCurrency);
+  const minValidation = validateCampaignMinBudget(provider as ProviderType, budgetMinorUnits, campCurrency);
   if (!minValidation.valid) {
     return res.status(400).json({ error: minValidation.error });
   }
@@ -767,7 +769,7 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
   const newCampaign: Campaign = {
     id,
     orgId: org.id,
-    provider,
+    provider: provider as ProviderType,
     providerAccountId: providerAccountId || 'unlinked',
     name: name.trim(),
     objective: objective || 'CONVERSIONS',
@@ -847,7 +849,7 @@ apiRouter.patch('/campaigns/:id/status', (req: ContextRequest, res: Response) =>
   }
 
   const oldStatus = campaign.status;
-  campaign.status = status;
+  campaign.status = status as CampaignStatus;
   campaign.version += 1;
   campaign.updatedAt = new Date().toISOString();
 
@@ -1368,7 +1370,7 @@ apiRouter.patch('/leads/:id/status', (req: ContextRequest, res: Response) => {
   if (typeof status !== 'string' || !validStatuses.includes(status)) {
     return res.status(400).json({ error: 'INVALID_LEAD_STATUS', message: 'Status must be NEW, CONTACTED, QUALIFIED, CONVERTED, or DISQUALIFIED.' });
   }
-  lead.status = status;
+  lead.status = status as LeadRecord['status'];
   persistCurrentStore();
   res.json(lead);
 });
