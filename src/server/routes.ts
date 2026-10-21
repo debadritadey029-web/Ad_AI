@@ -20,8 +20,6 @@ import {
   validateCreativeForProvider,
   validateCampaignMinBudget,
 } from './services/providers/index.js';
-import { PostgresAdapter } from './db/postgres.js';
-import { PersistenceManager } from './db/persistence.js';
 import {
   createSession,
   validateSessionToken,
@@ -1474,37 +1472,29 @@ apiRouter.get('/audit', (req: ContextRequest, res: Response) => {
 // 12. PostgreSQL & System Health / Readiness
 // ---------------------------------------------------------------------------
 
-apiRouter.get('/health', (req: Request, res: Response) => {
-  const pgAdapter = new PostgresAdapter();
-  const persistenceStatus = PersistenceManager.getInstance().getStorageStatus();
-
+apiRouter.get('/health', (_req: Request, res: Response) => {
+  // Public liveness must not disclose tenant counts or persistence internals.
+  // This endpoint confirms process availability, not production readiness.
   res.json({
     status: 'ONLINE',
     version: '2.5.0',
     timestamp: new Date().toISOString(),
-    postgresStatus: pgAdapter.getStatus(),
     persistence: {
-      mode: 'ATOMIC_FILE_SYNC',
-      status: persistenceStatus.exists ? 'PERSISTENT' : 'INITIALIZING',
-      sizeBytes: persistenceStatus.sizeBytes,
-    },
-    activeCounts: {
-      organizations: globalStore.organizations.size,
-      users: globalStore.users.size,
-      campaigns: globalStore.campaigns.size,
-      proposals: globalStore.proposals.size,
-      creatives: globalStore.creatives.size,
-      leads: globalStore.leads.size,
-      auditLogs: globalStore.auditLogs.length,
-      activeSessions: globalStore.sessions.size,
+      mode: process.env.VERCEL ? 'SERVERLESS_SNAPSHOT_COMPATIBILITY' : 'LOCAL_FILE_SNAPSHOT_COMPATIBILITY',
+      productionReady: false,
     },
   });
 });
 
-apiRouter.get('/health/ready', (req: Request, res: Response) => {
-  const ready = globalStore.organizations.size > 0 && globalStore.users.size > 0;
-  if (ready) {
-    return res.json({ ready: true, message: 'All operational subsystems ready for test traffic.' });
-  }
-  return res.status(503).json({ ready: false, message: 'Subsystems initializing.' });
+apiRouter.get('/health/ready', async (_req: Request, res: Response) => {
+  // Never infer readiness from seeded in-memory demo data. The current snapshot
+  // adapter is not concurrency-safe for serverless multi-tenant writes.
+  const database = await testSupabaseConnection();
+  return res.status(503).json({
+    ready: false,
+    productionReady: false,
+    dependencies: { supabase: database.ok ? 'CONNECTED' : 'UNAVAILABLE' },
+    blockers: ['DURABLE_TRANSACTIONAL_TENANT_PERSISTENCE_NOT_IMPLEMENTED'],
+    message: 'Controlled staging requests are available, but production readiness is blocked until normalized, transactional tenant-scoped persistence replaces the process-local store and whole-state snapshot.',
+  });
 });
