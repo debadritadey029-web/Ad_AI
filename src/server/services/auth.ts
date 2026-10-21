@@ -61,13 +61,13 @@ export function createSession(params: {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
 
-  // Determine active organization: specified or user's first active membership
-  let orgId = params.activeOrgId;
-  if (!orgId) {
-    const firstMembership = Array.from(globalStore.memberships.values()).find(
-      (m) => m.userId === params.userId && m.status === 'ACTIVE'
-    );
-    orgId = firstMembership ? firstMembership.orgId : 'org_apex';
+  // A session may only be issued to a known user with active membership in its selected org.
+  const activeMemberships = Array.from(globalStore.memberships.values()).filter(
+    (m) => m.userId === params.userId && m.status === 'ACTIVE'
+  );
+  const orgId = params.activeOrgId || activeMemberships[0]?.orgId;
+  if (!globalStore.users.has(params.userId) || !orgId || !activeMemberships.some((m) => m.orgId === orgId)) {
+    throw new Error('ACTIVE_MEMBERSHIP_REQUIRED');
   }
 
   const session: Session = {
