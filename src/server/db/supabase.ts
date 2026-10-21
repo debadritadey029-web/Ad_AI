@@ -127,16 +127,40 @@ export async function saveSupabaseSnapshot(snapshot: SerializedDataStore): Promi
 export interface SupabaseProvisionedIdentity {
   authUserId: string;
   email: string;
-  appUserId: string;
-  organizationId: string;
-  role: string;
+  appUser: {
+    id: string;
+    email: string;
+    name: string;
+    phone?: string;
+    avatarUrl?: string;
+    createdAt: string;
+  };
+  organization: {
+    id: string;
+    name: string;
+    slug: string;
+    tier: string;
+    defaultCurrency: string;
+    emergencyStopActive: boolean;
+    emergencyStopReason?: string;
+    emergencyStopTriggeredAt?: string;
+    emergencyStopTriggeredBy?: string;
+    settings: Record<string, unknown>;
+    createdAt: string;
+  };
+  membership: {
+    id: string;
+    userId: string;
+    orgId: string;
+    role: string;
+    status: string;
+    joinedAt: string;
+  };
 }
 
 /**
- * Verifies a Supabase access token with Auth and checks that the email is
- * explicitly provisioned in the legacy application users/memberships tables.
- * The local store must also contain the same user/org/membership before routes
- * can run; this avoids silently creating a tenant or granting demo access.
+ * Verifies a Supabase access token with Auth and loads its explicitly provisioned
+ * application account and ACTIVE tenant membership from the server-only database client.
  */
 export async function resolveSupabaseProvisionedIdentity(
   accessToken: string,
@@ -153,14 +177,14 @@ export async function resolveSupabaseProvisionedIdentity(
     const normalizedEmail = authUser.email.trim().toLowerCase();
     const { data: appUser, error: userError } = await client
       .from('users')
-      .select('id,email,auth_user_id')
+      .select('id,email,name,phone,avatar_url,created_at,auth_user_id')
       .eq('auth_user_id', authUser.id)
       .maybeSingle();
     if (userError || !appUser?.id || String(appUser.email).trim().toLowerCase() !== normalizedEmail) return null;
 
     let membershipQuery = client
       .from('memberships')
-      .select('id,user_id,org_id,role,status')
+      .select('id,user_id,org_id,role,status,created_at')
       .eq('user_id', appUser.id)
       .eq('status', 'ACTIVE');
     if (requestedOrganizationId) membershipQuery = membershipQuery.eq('org_id', requestedOrganizationId);
@@ -171,18 +195,44 @@ export async function resolveSupabaseProvisionedIdentity(
     for (const membership of memberships) {
       const { data: organization, error: organizationError } = await client
         .from('organizations')
-        .select('id')
+        .select('id,name,slug,tier,default_currency,emergency_stop_active,emergency_stop_reason,emergency_stop_triggered_at,emergency_stop_triggered_by,settings,created_at')
         .eq('id', membership.org_id)
         .maybeSingle();
-      if (!organizationError && organization?.id) {
-        return {
-          authUserId: authUser.id,
+      if (organizationError || !organization?.id) continue;
+
+      return {
+        authUserId: authUser.id,
+        email: normalizedEmail,
+        appUser: {
+          id: String(appUser.id),
           email: normalizedEmail,
-          appUserId: String(appUser.id),
-          organizationId: String(membership.org_id),
+          name: String(appUser.name || normalizedEmail),
+          phone: appUser.phone ? String(appUser.phone) : undefined,
+          avatarUrl: appUser.avatar_url ? String(appUser.avatar_url) : undefined,
+          createdAt: String(appUser.created_at || new Date().toISOString()),
+        },
+        organization: {
+          id: String(organization.id),
+          name: String(organization.name),
+          slug: String(organization.slug),
+          tier: String(organization.tier || 'STARTER'),
+          defaultCurrency: String(organization.default_currency || 'USD'),
+          emergencyStopActive: Boolean(organization.emergency_stop_active),
+          emergencyStopReason: organization.emergency_stop_reason ? String(organization.emergency_stop_reason) : undefined,
+          emergencyStopTriggeredAt: organization.emergency_stop_triggered_at ? String(organization.emergency_stop_triggered_at) : undefined,
+          emergencyStopTriggeredBy: organization.emergency_stop_triggered_by ? String(organization.emergency_stop_triggered_by) : undefined,
+          settings: (organization.settings || {}) as Record<string, unknown>,
+          createdAt: String(organization.created_at || new Date().toISOString()),
+        },
+        membership: {
+          id: String(membership.id),
+          userId: String(membership.user_id),
+          orgId: String(membership.org_id),
           role: String(membership.role),
-        };
-      }
+          status: String(membership.status),
+          joinedAt: String(membership.created_at || new Date().toISOString()),
+        },
+      };
     }
     return null;
   } catch (error) {
