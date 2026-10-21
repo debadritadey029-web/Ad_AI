@@ -42,6 +42,13 @@ import {
   createDurableCampaign,
   updateDurableCampaignStatus,
 } from './db/campaign-repository.js';
+import {
+  isDurableFinancePersistenceEnabled,
+  listDurableProposals,
+  getDurableCampaignForFinance,
+  createDurableBudgetProposal,
+  reviewDurableBudgetProposal,
+} from './db/finance-repository.js';
 import { createRateLimiter } from './middleware/security.js';
 import { isDemoAuthEnabled, isProduction, shouldExposeDevOtpCode } from './services/security-mode.js';
 import {
@@ -229,9 +236,12 @@ apiRouter.use((req: ContextRequest, res: Response, next: NextFunction) => {
   // Do not expose seeded process-local records as if they were customer data.
   // These read models are not yet backed by tenant-scoped durable repositories.
   const durableReadRequired = new Set([
-    '/finance/proposals', '/providers', '/analytics', '/creatives', '/leads', '/audit',
+    '/providers', '/analytics', '/creatives', '/leads', '/audit',
   ]);
-  if (req.method === 'GET' && durableReadRequired.has(req.path)) {
+  if (req.method === 'GET' && req.path === '/finance/proposals' && isDurableFinancePersistenceEnabled()) {
+    return next();
+  }
+  if (req.method === 'GET' && (req.path === '/finance/proposals' || durableReadRequired.has(req.path))) {
     return res.status(503).json({
       error: 'DURABLE_PERSISTENCE_NOT_IMPLEMENTED',
       message: 'This data view is temporarily unavailable in serverless staging until its tenant-scoped durable repository is deployed. No demo snapshot data is returned.',
@@ -242,12 +252,16 @@ apiRouter.use((req: ContextRequest, res: Response, next: NextFunction) => {
   const durableCampaignWrite =
     (req.method === 'POST' && req.path === '/campaigns') ||
     (req.method === 'PATCH' && /^\/campaigns\/[^/]+\/status$/.test(req.path));
+  const durableFinanceWrite =
+    (req.method === 'POST' && req.path === '/finance/proposals') ||
+    (req.method === 'POST' && /^\/finance\/proposals\/[^/]+\/review$/.test(req.path));
   if (durableCampaignWrite && !isDurableCampaignPersistenceEnabled()) {
     return res.status(503).json({
       error: 'DURABLE_CAMPAIGN_STORAGE_NOT_CONFIGURED',
       message: 'Campaign writes are disabled on Vercel until Supabase durable persistence is configured. No change was applied.',
     });
   }
+  if (durableFinanceWrite && isDurableFinancePersistenceEnabled()) return next();
   if (durableCampaignWrite) return next();
   return res.status(503).json({
     error: 'DURABLE_PERSISTENCE_NOT_IMPLEMENTED',
@@ -1084,196 +1098,147 @@ apiRouter.patch('/campaigns/:id/status', async (req: ContextRequest, res: Respon
 // 4. Financial Safety & Budget Proposals
 // ---------------------------------------------------------------------------
 
-apiRouter.get('/finance/proposals', (req: ContextRequest, res: Response) => {
+apiRouter.get('/finance/proposals', async (req: ContextRequest, res: Response) => {
   const org = req.org!;
+  if (isDurableFinancePersistenceEnabled()) {
+    try { return res.json(await listDurableProposals(org.id)); }
+    catch (error) {
+      const e = error as CampaignRepositoryError;
+      const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'CONFLICT' ? 409 : 503;
+      return res.status(status).json({ error: e.code, message: e.message });
+    }
+  }
   const proposals = Array.from(globalStore.proposals.values()).filter((p) => p.orgId === org.id);
-  res.json(proposals);
+  return res.json(proposals);
 });
 
-apiRouter.post('/finance/proposals', (req: ContextRequest, res: Response) => {
+apiRouter.post('/finance/proposals', async (req: ContextRequest, res: Response) => {
   const org = req.org!;
   const user = req.user!;
   const membership = req.membership!;
-
   if (!hasPermission(membership.role, 'EDIT_CAMPAIGNS')) {
     return res.status(403).json({ error: 'Permission denied: Requires EDIT_CAMPAIGNS permission.' });
   }
-
-  const { campaignId, proposedBudgetAmount, title, description, reason } = req.body;
-  const campaign = globalStore.campaigns.get(campaignId);
-
-  if (!campaign || campaign.orgId !== org.id) {
-    return res.status(404).json({ error: 'Target campaign not found in active organization.' });
+  const { campaignId, proposedBudgetAmount, title, description, reason } = req.body || {};
+  if (typeof campaignId !== 'string' || !campaignId.trim()) {
+    return res.status(400).json({ error: 'CAMPAIGN_REQUIRED', message: 'Choose a campaign in the active organization.' });
+  }
+  const amount = Number(proposedBudgetAmount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'INVALID_BUDGET', message: 'Proposed budget must be a positive finite amount.' });
+  }
+  if (isDurableFinancePersistenceEnabled()) {
+    try {
+      const campaign = await getDurableCampaignForFinance(org.id, campaignId);
+      const proposedBudgetMinorUnits = toMinorUnits(amount, campaign.currency);
+      const proposal = await createDurableBudgetProposal({
+        orgId: org.id, campaignId, proposedBudgetMinorUnits,
+        title: typeof title === 'string' ? title.trim().slice(0, 255) : undefined,
+        description: typeof description === 'string' ? description.trim().slice(0, 2000) : undefined,
+        reason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 2000) : 'Budget adjustment requested for campaign optimization.',
+      }, { userId: user.id, email: user.email, role: membership.role });
+      return res.status(201).json(proposal);
+    } catch (error) {
+      const e = error as CampaignRepositoryError;
+      const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'CONFLICT' ? 409 : e.code === 'NOT_CONFIGURED' ? 403 : 503;
+      return res.status(status).json({ error: e.code, message: e.message });
+    }
   }
 
-  const proposedBudgetMinorUnits = toMinorUnits(Number(proposedBudgetAmount), campaign.currency);
-
+  const campaign = globalStore.campaigns.get(campaignId);
+  if (!campaign || campaign.orgId !== org.id) return res.status(404).json({ error: 'Target campaign not found in active organization.' });
+  const proposedBudgetMinorUnits = toMinorUnits(amount, campaign.currency);
   const policyCheck = evaluateBudgetPolicy({
-    currentBudgetMinorUnits: campaign.budgetMinorUnits,
-    proposedBudgetMinorUnits,
-    currency: campaign.currency,
+    currentBudgetMinorUnits: campaign.budgetMinorUnits, proposedBudgetMinorUnits, currency: campaign.currency,
     thresholdMinorUnits: org.settings.budgetChangeApprovalThresholdMinorUnits,
     dailyCeilingMinorUnits: org.settings.dailySpendCeilingMinorUnits,
-    requesterUserId: user.id,
-    emergencyStopActive: org.emergencyStopActive,
-    campaignVersion: campaign.version,
-    proposalCampaignVersion: campaign.version,
+    requesterUserId: user.id, emergencyStopActive: org.emergencyStopActive,
+    campaignVersion: campaign.version, proposalCampaignVersion: campaign.version,
   });
-
-  if (!policyCheck.allowed) {
-    return res.status(400).json({ error: policyCheck.reasons.join(', ') });
-  }
-
-  const id = `prp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  if (!policyCheck.allowed) return res.status(400).json({ error: policyCheck.reasons.join(', ') });
+  const id = randomUUID();
   const proposal: BudgetProposal = {
-    id,
-    orgId: org.id,
-    campaignId,
+    id, orgId: org.id, campaignId,
     type: proposedBudgetMinorUnits > campaign.budgetMinorUnits ? 'BUDGET_INCREASE' : 'BUDGET_DECREASE',
-    title: title || `Budget adjustment for ${campaign.name}`,
-    description: description || `Request to adjust budget to ${formatCurrency(proposedBudgetMinorUnits, campaign.currency)}.`,
-    requestedByUserId: user.id,
-    requestedAt: new Date().toISOString(),
-    status: 'PENDING',
-    currentBudgetMinorUnits: campaign.budgetMinorUnits,
-    proposedBudgetMinorUnits,
-    currency: campaign.currency,
-    reason: reason || 'Optimization and pacing adjustment.',
+    title: typeof title === 'string' && title.trim() ? title.trim().slice(0, 255) : `Budget adjustment for ${campaign.name}`,
+    description: typeof description === 'string' ? description.trim().slice(0, 2000) : `Request to adjust budget to ${formatCurrency(proposedBudgetMinorUnits, campaign.currency)}.`,
+    requestedByUserId: user.id, requestedAt: new Date().toISOString(), status: 'PENDING',
+    currentBudgetMinorUnits: campaign.budgetMinorUnits, proposedBudgetMinorUnits, currency: campaign.currency,
+    reason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 2000) : 'Optimization and pacing adjustment.',
     campaignVersionAtRequest: campaign.version,
   };
-
   globalStore.proposals.set(id, proposal);
-
-  // Audit
   const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
-  const log = createAuditLogEntry({
-    orgId: org.id,
-    actorUserId: user.id,
-    actorEmail: user.email,
-    actorRole: membership.role,
-    action: 'BUDGET_PROPOSAL_CREATED',
-    entityType: 'PROPOSAL',
-    entityId: id,
-    prevHash: prevLog?.hash,
-    details: {
-      campaignId,
-      currentBudget: campaign.budgetMinorUnits,
-      proposedBudget: proposedBudgetMinorUnits,
-    },
-  });
-  globalStore.auditLogs.push(log);
+  globalStore.auditLogs.push(createAuditLogEntry({
+    orgId: org.id, actorUserId: user.id, actorEmail: user.email, actorRole: membership.role,
+    action: 'BUDGET_PROPOSAL_CREATED', entityType: 'PROPOSAL', entityId: id, prevHash: prevLog?.hash,
+    details: { campaignId, currentBudget: campaign.budgetMinorUnits, proposedBudget: proposedBudgetMinorUnits },
+  }));
   persistCurrentStore();
-
-  res.status(201).json(proposal);
+  return res.status(201).json(proposal);
 });
 
-apiRouter.post('/finance/proposals/:id/review', (req: ContextRequest, res: Response) => {
+apiRouter.post('/finance/proposals/:id/review', async (req: ContextRequest, res: Response) => {
   const { id } = req.params;
-  const { action, notes } = req.body; // action: 'APPROVE' | 'REJECT'
+  const { action, notes } = req.body || {};
   const org = req.org!;
   const user = req.user!;
   const membership = req.membership!;
-
   if (!hasPermission(membership.role, 'APPROVE_BUDGETS')) {
     return res.status(403).json({ error: 'Permission denied: Requires APPROVE_BUDGETS authority.' });
   }
-
-  const proposal = globalStore.proposals.get(id);
-  if (!proposal || proposal.orgId !== org.id) {
-    return res.status(404).json({ error: 'Proposal not found in active organization.' });
-  }
-
-  if (proposal.status !== 'PENDING') {
-    return res.status(400).json({ error: `Proposal already processed (status: ${proposal.status}).` });
-  }
-
-  const campaign = globalStore.campaigns.get(proposal.campaignId);
-  if (!campaign) {
-    return res.status(404).json({ error: 'Campaign associated with proposal not found.' });
-  }
-
-  // Four-Eyes Principle: Requester CANNOT approve their own proposal
-  if (org.settings.requireFourEyesApproval && proposal.requestedByUserId === user.id) {
-    return res.status(403).json({
-      error: 'FOUR_EYES_VIOLATION: Requester cannot approve their own financial proposal.',
-    });
-  }
-
-  // Emergency Stop check
-  if (org.emergencyStopActive) {
-    return res.status(403).json({
-      error: 'EMERGENCY_STOP_ACTIVE: No financial proposals can be executed while killswitch is engaged.',
-    });
-  }
-
-  // Stale proposal optimistic locking check
-  if (campaign.version !== proposal.campaignVersionAtRequest) {
-    proposal.status = 'STALE';
-    proposal.reviewNotes = `Proposal marked STALE because campaign version changed from ${proposal.campaignVersionAtRequest} to ${campaign.version}.`;
-    persistCurrentStore();
-    return res.status(409).json({
-      error: 'STALE_PROPOSAL: Campaign was modified after proposal was submitted. Re-submission required.',
-      proposal,
-    });
-  }
-
   if (action !== 'APPROVE' && action !== 'REJECT') {
     return res.status(400).json({ error: 'INVALID_REVIEW_ACTION', message: 'Action must be APPROVE or REJECT.' });
   }
-
+  if (isDurableFinancePersistenceEnabled()) {
+    try {
+      const proposal = await reviewDurableBudgetProposal({
+        orgId: org.id, proposalId: id, action,
+        notes: typeof notes === 'string' ? notes.trim().slice(0, 2000) : undefined,
+      }, { userId: user.id, email: user.email, role: membership.role });
+      if (proposal.status === 'STALE') {
+        return res.status(409).json({ error: 'STALE_PROPOSAL', message: 'Campaign changed after the proposal was submitted. Create a new proposal.', proposal });
+      }
+      return res.json({ ...proposal, providerWritePerformed: false });
+    } catch (error) {
+      const e = error as CampaignRepositoryError;
+      const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'CONFLICT' ? 409 : e.code === 'NOT_CONFIGURED' ? 403 : 503;
+      return res.status(status).json({ error: e.code, message: e.message });
+    }
+  }
+  const proposal = globalStore.proposals.get(id);
+  if (!proposal || proposal.orgId !== org.id) return res.status(404).json({ error: 'Proposal not found in active organization.' });
+  if (proposal.status !== 'PENDING') return res.status(400).json({ error: `Proposal already processed (status: ${proposal.status}).` });
+  const campaign = globalStore.campaigns.get(proposal.campaignId);
+  if (!campaign || campaign.orgId !== org.id) return res.status(404).json({ error: 'Campaign associated with proposal not found.' });
+  if (org.settings.requireFourEyesApproval && proposal.requestedByUserId === user.id) {
+    return res.status(403).json({ error: 'FOUR_EYES_VIOLATION: Requester cannot approve their own financial proposal.' });
+  }
+  if (org.emergencyStopActive) return res.status(403).json({ error: 'EMERGENCY_STOP_ACTIVE: Financial proposals cannot be reviewed while emergency stop is active.' });
+  if (campaign.version !== proposal.campaignVersionAtRequest) {
+    proposal.status = 'STALE';
+    proposal.reviewNotes = 'Campaign changed after proposal submission; resubmission required.';
+    persistCurrentStore();
+    return res.status(409).json({ error: 'STALE_PROPOSAL', proposal });
+  }
+  proposal.reviewedByUserId = user.id;
+  proposal.reviewedAt = new Date().toISOString();
+  proposal.reviewNotes = typeof notes === 'string' ? notes.trim().slice(0, 2000) : undefined;
   if (action === 'APPROVE') {
-    // This application has no live provider budget-write adapter. Approval is recorded
-    // as APPROVED (not EXECUTED) and only updates the internal draft configuration.
     proposal.status = 'APPROVED';
-    proposal.reviewedByUserId = user.id;
-    proposal.reviewedAt = new Date().toISOString();
-    proposal.reviewNotes = notes || 'Approved in the local workspace only; no provider-side budget update was executed.';
-
-    // Execute change on campaign
     campaign.budgetMinorUnits = proposal.proposedBudgetMinorUnits;
     campaign.version += 1;
     campaign.updatedAt = new Date().toISOString();
-
-    const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
-    const log = createAuditLogEntry({
-      orgId: org.id,
-      actorUserId: user.id,
-      actorEmail: user.email,
-      actorRole: membership.role,
-      action: 'BUDGET_PROPOSAL_APPROVED_LOCAL_ONLY',
-      entityType: 'PROPOSAL',
-      entityId: id,
-      prevHash: prevLog?.hash,
-      details: {
-        campaignId: campaign.id,
-        newBudgetMinorUnits: campaign.budgetMinorUnits,
-        approverId: user.id,
-      },
-    });
-    globalStore.auditLogs.push(log);
-  } else {
-    proposal.status = 'REJECTED';
-    proposal.reviewedByUserId = user.id;
-    proposal.reviewedAt = new Date().toISOString();
-    proposal.reviewNotes = notes || 'Rejected during financial review.';
-
-    const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
-    const log = createAuditLogEntry({
-      orgId: org.id,
-      actorUserId: user.id,
-      actorEmail: user.email,
-      actorRole: membership.role,
-      action: 'BUDGET_PROPOSAL_REJECTED',
-      entityType: 'PROPOSAL',
-      entityId: id,
-      prevHash: prevLog?.hash,
-      details: { notes },
-    });
-    globalStore.auditLogs.push(log);
-  }
-
+  } else proposal.status = 'REJECTED';
+  const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
+  globalStore.auditLogs.push(createAuditLogEntry({
+    orgId: org.id, actorUserId: user.id, actorEmail: user.email, actorRole: membership.role,
+    action: action === 'APPROVE' ? 'BUDGET_PROPOSAL_APPROVED_LOCAL_ONLY' : 'BUDGET_PROPOSAL_REJECTED',
+    entityType: 'PROPOSAL', entityId: id, prevHash: prevLog?.hash,
+    details: { campaignId: campaign.id, status: proposal.status, providerWritePerformed: false },
+  }));
   persistCurrentStore();
-  res.json(proposal);
+  return res.json({ ...proposal, providerWritePerformed: false });
 });
 
 // ---------------------------------------------------------------------------
