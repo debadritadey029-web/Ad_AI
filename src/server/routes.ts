@@ -255,6 +255,7 @@ apiRouter.use((req: ContextRequest, res: Response, next: NextFunction) => {
     (req.method === 'PATCH' && /^\/campaigns\/[^/]+\/status$/.test(req.path));
   const durableFinanceWrite =
     (req.method === 'POST' && req.path === '/finance/proposals') ||
+    (req.method === 'POST' && req.path === '/finance/emergency-stop') ||
     (req.method === 'POST' && /^\/finance\/proposals\/[^/]+\/review$/.test(req.path));
   if (durableCampaignWrite && !isDurableCampaignPersistenceEnabled()) {
     return res.status(503).json({
