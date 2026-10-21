@@ -166,5 +166,51 @@ revoke all on function public.app_review_budget_proposal(text,text,text,text,jso
 grant execute on function public.app_create_budget_proposal(text,text,bigint,text,text,text,jsonb) to service_role;
 grant execute on function public.app_review_budget_proposal(text,text,text,text,jsonb) to service_role;
 
+
+create or replace function public.app_set_emergency_stop(p_org_id text, p_action text, p_reason text, p_actor jsonb)
+returns setof public.app_org_controls
+language plpgsql security definer
+set search_path = pg_catalog, public
+as $
+declare
+  v_controls public.app_org_controls;
+  v_paused_count integer := 0;
+  v_allowed_roles text[];
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then raise exception 'service_role_required' using errcode='42501'; end if;
+  if p_action not in ('TRIGGER','RELEASE') then raise exception 'invalid_emergency_stop_action' using errcode='22023'; end if;
+  v_allowed_roles := case when p_action='TRIGGER' then array['OWNER','ADMIN','OPERATOR'] else array['OWNER','ADMIN'] end;
+  if not (p_actor->>'role' = any(v_allowed_roles)) then raise exception 'emergency_stop_permission_denied' using errcode='42501'; end if;
+  if not exists (select 1 from public.memberships m where m.org_id=p_org_id and m.user_id=p_actor->>'user_id' and m.status='ACTIVE' and m.role=p_actor->>'role') then
+    raise exception 'active_actor_membership_required' using errcode='42501';
+  end if;
+  insert into public.app_org_controls(org_id, policy)
+    select p_org_id, coalesce(o.settings, '{}'::jsonb) from public.organizations o where o.id=p_org_id
+    on conflict (org_id) do nothing;
+  if p_action='TRIGGER' then
+    update public.app_org_controls set emergency_stop_active=true,
+      emergency_stop_reason=left(coalesce(nullif(trim(p_reason),''),'Immediate operational containment requested.'),1000),
+      emergency_stop_triggered_at=now(), emergency_stop_triggered_by=p_actor->>'user_id',
+      version=version+1, updated_at=now()
+      where org_id=p_org_id returning * into v_controls;
+    update public.app_campaigns set status='PAUSED',version=version+1,updated_at=now()
+      where org_id=p_org_id and status='ACTIVE';
+    get diagnostics v_paused_count = row_count;
+  else
+    update public.app_org_controls set emergency_stop_active=false, emergency_stop_reason=null,
+      version=version+1,updated_at=now()
+      where org_id=p_org_id returning * into v_controls;
+  end if;
+  perform public.app_append_audit_event(p_org_id,p_actor,
+    case when p_action='TRIGGER' then 'EMERGENCY_STOP_TRIGGERED' else 'EMERGENCY_STOP_RELEASED' end,
+    'ORGANIZATION',p_org_id,
+    jsonb_build_object('reason',case when p_action='TRIGGER' then v_controls.emergency_stop_reason else null end,
+      'paused_draft_records',v_paused_count,'provider_pause_performed',false));
+  return next v_controls;
+end;
+$;
+revoke all on function public.app_set_emergency_stop(text,text,text,jsonb) from public, anon, authenticated;
+grant execute on function public.app_set_emergency_stop(text,text,text,jsonb) to service_role;
+
 comment on table public.app_budget_proposals is 'Tenant-scoped durable budget proposals with transactional four-eyes review.';
 commit;
