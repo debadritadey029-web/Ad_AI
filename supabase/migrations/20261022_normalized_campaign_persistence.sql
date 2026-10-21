@@ -42,7 +42,7 @@ revoke all on table public.app_campaigns from anon, authenticated;
 create table if not exists public.app_audit_events (
   sequence_id bigint generated always as identity primary key,
   id uuid not null default gen_random_uuid() unique,
-  org_id text not null references public.organizations(id) on delete cascade,
+  org_id text not null references public.organizations(id) on delete restrict,
   actor_user_id text not null,
   actor_email text not null,
   actor_role text not null,
@@ -58,7 +58,23 @@ create table if not exists public.app_audit_events (
 create index if not exists idx_app_audit_events_org_time
   on public.app_audit_events (org_id, occurred_at desc, sequence_id desc);
 alter table public.app_audit_events enable row level security;
-revoke all on table public.app_audit_events from anon, authenticated;
+revoke all on table public.app_audit_events from public, anon, authenticated;
+revoke update, delete, truncate on table public.app_audit_events from service_role;
+grant select on table public.app_audit_events to service_role;
+
+create or replace function public.prevent_app_audit_event_mutation()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $
+begin
+  raise exception 'audit_events_are_append_only' using errcode = '42501';
+end;
+$;
+drop trigger if exists trg_app_audit_events_append_only on public.app_audit_events;
+create trigger trg_app_audit_events_append_only
+before update or delete on public.app_audit_events
+for each row execute function public.prevent_app_audit_event_mutation();
 
 create or replace function public.app_append_audit_event(
   p_org_id text, p_actor jsonb, p_action text, p_entity_type text, p_entity_id text, p_details jsonb
@@ -80,6 +96,15 @@ begin
      or nullif(p_actor->>'email','') is null
      or nullif(p_actor->>'role','') is null then
     raise exception 'audit_actor_required' using errcode = '22023';
+  end if;
+  if not exists (
+    select 1 from public.memberships m
+     where m.org_id = p_org_id
+       and m.user_id = p_actor->>'user_id'
+       and m.status = 'ACTIVE'
+       and m.role = p_actor->>'role'
+  ) then
+    raise exception 'active_actor_membership_required' using errcode = '42501';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(p_org_id, 0));
   select event_hash into v_previous_hash from public.app_audit_events
