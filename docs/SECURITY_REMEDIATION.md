@@ -38,7 +38,7 @@ This document records the scope of the critical-security remediation branch. It 
 
 ### Phase 2 scope limitation
 
-Campaign list/create/status and budget proposal creation/review now have normalized durable repositories and transactional PostgreSQL functions. Organization settings/emergency-stop state, provider connections, creatives, leads, analytics, and a durable audit read API still need dedicated repositories/workflows. The readiness endpoint must remain closed until those domains and real browser E2E coverage are complete.
+Campaign list/create/status and budget proposal creation/review now have normalized durable repositories and transactional PostgreSQL functions. Organization financial-policy editing, provider connections, creatives, leads, analytics, and a durable audit read API still need dedicated repositories/workflows. The readiness endpoint must remain closed until those domains and real browser E2E coverage are complete.
 
 ## Explicit release blockers still open
 
