@@ -500,7 +500,10 @@ apiRouter.post('/auth/login', authLimiter, (req: Request, res: Response) => {
   const membership = Array.from(globalStore.memberships.values()).find(
     (m) => m.userId === user.id && m.status === 'ACTIVE'
   );
-  const orgId = membership ? membership.orgId : 'org_apex';
+  if (!membership) {
+    return res.status(403).json({ error: 'ORGANIZATION_MEMBERSHIP_REQUIRED', message: 'No active organization membership is assigned to this account.' });
+  }
+  const orgId = membership.orgId;
 
   const session = createSession({
     userId: user.id,
