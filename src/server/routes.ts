@@ -34,6 +34,13 @@ import {
   maskContact,
 } from './services/auth.js';
 import { getSupabaseServerStatus, testSupabaseConnection, resolveSupabaseProvisionedIdentity } from './db/supabase.js';
+import {
+  CampaignRepositoryError,
+  isDurableCampaignPersistenceEnabled,
+  listCampaignsForOrganization,
+  createDurableCampaign,
+  updateDurableCampaignStatus,
+} from './db/campaign-repository.js';
 import { createRateLimiter } from './middleware/security.js';
 import { isDemoAuthEnabled, isProduction, shouldExposeDevOtpCode } from './services/security-mode.js';
 import {
@@ -209,6 +216,21 @@ async function resolveContext(req: ContextRequest, res: Response, next: NextFunc
   req.token = token;
   return next();
 }
+
+// In Vercel, block writes to domains that have not yet been migrated to durable
+// transactional repositories. Never acknowledge a process-local mutation as durable.
+apiRouter.use((req: ContextRequest, res: Response, next: NextFunction) => {
+  if (!process.env.VERCEL || !['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  if (req.path.startsWith('/auth/')) return next();
+  const durableCampaignWrite =
+    (req.method === 'POST' && req.path === '/campaigns') ||
+    (req.method === 'PATCH' && /^\/campaigns\/[^/]+\/status$/.test(req.path));
+  if (durableCampaignWrite) return next();
+  return res.status(503).json({
+    error: 'DURABLE_PERSISTENCE_NOT_IMPLEMENTED',
+    message: 'This write is temporarily disabled in serverless staging until its tenant-scoped transactional repository is deployed. No change was applied.',
+  });
+});
 
 // Apply context resolution to all protected API routes
 apiRouter.use(resolveContext);
@@ -783,13 +805,24 @@ apiRouter.patch('/organizations/settings', (req: ContextRequest, res: Response) 
 // 3. Campaigns
 // ---------------------------------------------------------------------------
 
-apiRouter.get('/campaigns', (req: ContextRequest, res: Response) => {
+apiRouter.get('/campaigns', async (req: ContextRequest, res: Response) => {
   const org = req.org!;
+  if (isDurableCampaignPersistenceEnabled()) {
+    try {
+      return res.json(await listCampaignsForOrganization(org.id));
+    } catch (error) {
+      console.error('[CampaignRepository] list failed', error instanceof CampaignRepositoryError ? error.code : 'UNEXPECTED_ERROR');
+      return res.status(503).json({
+        error: 'DURABLE_CAMPAIGN_STORAGE_UNAVAILABLE',
+        message: 'Campaign data could not be loaded from durable storage. Please retry; no local snapshot fallback was used.',
+      });
+    }
+  }
   const campaigns = Array.from(globalStore.campaigns.values()).filter((c) => c.orgId === org.id);
-  res.json(campaigns);
+  return res.json(campaigns);
 });
 
-apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
+apiRouter.post('/campaigns', async (req: ContextRequest, res: Response) => {
   const org = req.org!;
   const user = req.user!;
   const membership = req.membership!;
@@ -877,7 +910,26 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
     version: 1,
   };
 
-  globalStore.campaigns.set(id, newCampaign);
+  if (isDurableCampaignPersistenceEnabled()) {
+    try {
+      const persistedCampaign = await createDurableCampaign(newCampaign);
+      globalStore.campaigns.set(id, persistedCampaign);
+      // The local cache is only a request-process convenience; PostgreSQL is the
+      // source of truth. Audit persistence for this mutation is being migrated next.
+      res.status(201).json(persistedCampaign);
+    } catch (error) {
+      console.error('[CampaignRepository] create failed', error instanceof CampaignRepositoryError ? error.code : 'UNEXPECTED_ERROR');
+      const status = error instanceof CampaignRepositoryError && error.code === 'CONFLICT' ? 409 : 503;
+      return res.status(status).json({
+        error: error instanceof CampaignRepositoryError ? error.code : 'DURABLE_CAMPAIGN_STORAGE_UNAVAILABLE',
+        message: error instanceof CampaignRepositoryError && error.code === 'CONFLICT'
+          ? error.message
+          : 'Campaign could not be committed to durable storage. No local-only campaign was created.',
+      });
+    }
+  } else {
+    globalStore.campaigns.set(id, newCampaign);
+  }
 
   // Audit
   const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
@@ -916,7 +968,16 @@ apiRouter.patch('/campaigns/:id/status', (req: ContextRequest, res: Response) =>
     return res.status(501).json({ error: 'PROVIDER_WRITE_NOT_IMPLEMENTED', message: 'Campaign activation is unavailable because live provider publishing is not implemented. The campaign remains unchanged.' });
   }
 
-  const campaign = globalStore.campaigns.get(id);
+  let campaign = globalStore.campaigns.get(id);
+  if (isDurableCampaignPersistenceEnabled()) {
+    try {
+      const durableCampaigns = await listCampaignsForOrganization(org.id);
+      campaign = durableCampaigns.find((item) => item.id === id);
+    } catch (error) {
+      console.error('[CampaignRepository] status lookup failed', error instanceof CampaignRepositoryError ? error.code : 'UNEXPECTED_ERROR');
+      return res.status(503).json({ error: 'DURABLE_CAMPAIGN_STORAGE_UNAVAILABLE', message: 'Campaign status cannot be changed until durable storage is available.' });
+    }
+  }
   if (!campaign || campaign.orgId !== org.id) {
     return res.status(404).json({ error: 'Campaign not found within active organization.' });
   }
@@ -928,9 +989,28 @@ apiRouter.patch('/campaigns/:id/status', (req: ContextRequest, res: Response) =>
   }
 
   const oldStatus = campaign.status;
-  campaign.status = status as CampaignStatus;
-  campaign.version += 1;
-  campaign.updatedAt = new Date().toISOString();
+  if (isDurableCampaignPersistenceEnabled()) {
+    try {
+      campaign = await updateDurableCampaignStatus(
+        org.id,
+        id,
+        campaign.version,
+        status as Exclude<CampaignStatus, 'ACTIVE'>
+      );
+      globalStore.campaigns.set(id, campaign);
+    } catch (error) {
+      console.error('[CampaignRepository] status update failed', error instanceof CampaignRepositoryError ? error.code : 'UNEXPECTED_ERROR');
+      const conflict = error instanceof CampaignRepositoryError && error.code === 'CONFLICT';
+      return res.status(conflict ? 409 : error instanceof CampaignRepositoryError && error.code === 'NOT_FOUND' ? 404 : 503).json({
+        error: error instanceof CampaignRepositoryError ? error.code : 'DURABLE_CAMPAIGN_STORAGE_UNAVAILABLE',
+        message: error instanceof CampaignRepositoryError ? error.message : 'Campaign status was not changed because durable storage failed.',
+      });
+    }
+  } else {
+    campaign.status = status as CampaignStatus;
+    campaign.version += 1;
+    campaign.updatedAt = new Date().toISOString();
+  }
 
   // Audit
   const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
