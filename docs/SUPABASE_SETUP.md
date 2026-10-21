@@ -86,6 +86,14 @@ Add these under Vercel → Project → Settings → Environment Variables, for *
 
 For Vercel Production, set `APP_ENV=production`, `ENABLE_DEMO_AUTH=false`, and `ENABLE_DEV_OTP_CODE=false`. GitHub Actions repository secrets do **not** automatically become Vercel runtime environment variables; set the runtime values in Vercel's environment settings as well. Never paste secrets into chat, source files, or screenshots.
 
+## Vercel API routing note
+
+The branch includes a Vercel serverless catch-all at `api/[...path].ts`. Vercel should route `/api/*` to this function and all other frontend paths to the SPA. After a Preview deployment, verify:
+
+- `/api/health` returns HTTP 200 and does not expose tenant counts.
+- `/api/auth/context` without a bearer token returns HTTP 401.
+- `/api/health/ready` currently returns HTTP 503 by design: durable transactional tenant-scoped persistence is not yet implemented. Do not treat the application as production-ready or connect live ad accounts until this gate is closed.
+
 ## 5. Verify staging
 
 1. Open the Vercel Preview deployment and use email OTP with the provisioned address.
