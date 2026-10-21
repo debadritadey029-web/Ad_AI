@@ -4,6 +4,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'node:crypto';
 import { globalStore, persistCurrentStore } from './db/store.js';
 import {
   evaluateBudgetPolicy,
@@ -877,7 +878,7 @@ apiRouter.post('/campaigns', async (req: ContextRequest, res: Response) => {
     });
   }
 
-  const id = `cmp_${provider}_${Date.now()}`;
+  const id = `cmp_${provider}_${randomUUID()}`;
   const newCampaign: Campaign = {
     id,
     orgId: org.id,
@@ -914,9 +915,9 @@ apiRouter.post('/campaigns', async (req: ContextRequest, res: Response) => {
     try {
       const persistedCampaign = await createDurableCampaign(newCampaign);
       globalStore.campaigns.set(id, persistedCampaign);
+      Object.assign(newCampaign, persistedCampaign);
       // The local cache is only a request-process convenience; PostgreSQL is the
       // source of truth. Audit persistence for this mutation is being migrated next.
-      res.status(201).json(persistedCampaign);
     } catch (error) {
       console.error('[CampaignRepository] create failed', error instanceof CampaignRepositoryError ? error.code : 'UNEXPECTED_ERROR');
       const status = error instanceof CampaignRepositoryError && error.code === 'CONFLICT' ? 409 : 503;
@@ -950,7 +951,7 @@ apiRouter.post('/campaigns', async (req: ContextRequest, res: Response) => {
   res.status(201).json(newCampaign);
 });
 
-apiRouter.patch('/campaigns/:id/status', (req: ContextRequest, res: Response) => {
+apiRouter.patch('/campaigns/:id/status', async (req: ContextRequest, res: Response) => {
   const { id } = req.params;
   const { status } = req.body;
   const org = req.org!;
