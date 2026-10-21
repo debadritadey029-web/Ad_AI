@@ -74,7 +74,6 @@ function resolveContext(req: ContextRequest, res: Response, next: NextFunction) 
     '/health',
     '/health/ready',
     '/supabase/status',
-    '/supabase/test',
     '/auth/login',
     '/auth/login-step1',
     '/auth/login-step2',
@@ -375,6 +374,9 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
  */
 apiRouter.post('/auth/login-step2', authLimiter, (req: Request, res: Response) => {
   const { challengeToken, code } = req.body;
+  if (isProduction()) {
+    return res.status(503).json({ error: 'SECURE_LOGIN_NOT_CONFIGURED', message: 'Production sign-in is unavailable until secure two-factor delivery is configured.' });
+  }
   if (!challengeToken || !code) {
     return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Challenge token and 6-digit OTP code are required.' });
   }
@@ -467,6 +469,9 @@ apiRouter.post('/auth/login', authLimiter, (req: Request, res: Response) => {
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
+  if (isProduction()) {
+    return res.status(503).json({ error: 'SECURE_LOGIN_NOT_CONFIGURED', message: 'Production sign-in is unavailable until secure two-factor delivery is configured.' });
+  }
 
   const user = Array.from(globalStore.users.values()).find(
     (u) => u.email.toLowerCase() === String(email).toLowerCase()
@@ -481,14 +486,8 @@ apiRouter.post('/auth/login', authLimiter, (req: Request, res: Response) => {
     return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
   }
 
-  // This legacy endpoint skips the 2FA challenge. Disable it in production until all
-  // accounts are routed through a configured delivery-backed step-1/step-2 flow.
-  if (isProduction()) {
-    return res.status(503).json({
-      error: 'SECURE_LOGIN_NOT_CONFIGURED',
-      message: 'Production sign-in is unavailable until secure two-factor delivery is configured.',
-    });
-  }
+  // This legacy endpoint skips the 2FA challenge, so it is restricted to accounts
+  // that explicitly have 2FA disabled and is never used in production.
   if (user.twoFactorEnabled !== false) {
     return res.status(403).json({
       error: 'TWO_FACTOR_REQUIRED',
@@ -739,6 +738,9 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
 
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'Campaign name is required.' });
+  }
+  if (typeof provider !== 'string' || !Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, provider)) {
+    return res.status(400).json({ error: 'INVALID_PROVIDER', message: 'Select a supported advertising provider.' });
   }
 
   if (!budgetAmount || isNaN(Number(budgetAmount)) || Number(budgetAmount) <= 0) {
@@ -1074,6 +1076,9 @@ apiRouter.post('/finance/emergency-stop', (req: ContextRequest, res: Response) =
   const user = req.user!;
   const membership = req.membership!;
 
+  if (action !== 'TRIGGER' && action !== 'RELEASE') {
+    return res.status(400).json({ error: 'INVALID_EMERGENCY_STOP_ACTION', message: 'Action must be TRIGGER or RELEASE.' });
+  }
   const reqPerm = action === 'TRIGGER' ? 'TRIGGER_EMERGENCY_STOP' : 'RELEASE_EMERGENCY_STOP';
   if (!hasPermission(membership.role, reqPerm)) {
     return res.status(403).json({ error: `Permission denied: Requires ${reqPerm}.` });
@@ -1160,6 +1165,10 @@ apiRouter.get('/providers', (req: ContextRequest, res: Response) => {
 apiRouter.post('/providers/:id/sync', (req: ContextRequest, res: Response) => {
   const { id } = req.params;
   const org = req.org!;
+  const membership = req.membership!;
+  if (!hasPermission(membership.role, 'CONNECT_PROVIDERS')) {
+    return res.status(403).json({ error: 'Permission denied: Requires CONNECT_PROVIDERS permission.' });
+  }
   const conn = globalStore.providerConnections.get(id);
 
   if (!conn || conn.orgId !== org.id) {
@@ -1345,6 +1354,10 @@ apiRouter.patch('/leads/:id/status', (req: ContextRequest, res: Response) => {
   const { id } = req.params;
   const { status } = req.body;
   const org = req.org!;
+  const membership = req.membership!;
+  if (!hasPermission(membership.role, 'MANAGE_LEADS')) {
+    return res.status(403).json({ error: 'Permission denied: Requires MANAGE_LEADS permission.' });
+  }
   const lead = globalStore.leads.get(id);
 
   if (!lead || lead.orgId !== org.id) {
