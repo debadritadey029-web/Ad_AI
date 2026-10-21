@@ -38,7 +38,7 @@ This document records the scope of the critical-security remediation branch. It 
 
 ### Phase 2 scope limitation
 
-Only campaign list/create/status is moved to normalized durable persistence in this phase. Organization settings, finance proposals/approvals, provider connections, creatives, leads, and a fully durable audit read API still need dedicated repositories and transactional workflows. The readiness endpoint must remain closed until those domains and real browser E2E coverage are complete.
+Campaign list/create/status and budget proposal creation/review now have normalized durable repositories and transactional PostgreSQL functions. Organization settings/emergency-stop state, provider connections, creatives, leads, analytics, and a durable audit read API still need dedicated repositories/workflows. The readiness endpoint must remain closed until those domains and real browser E2E coverage are complete.
 
 ## Explicit release blockers still open
 
@@ -71,3 +71,13 @@ Only campaign list/create/status is moved to normalized durable persistence in t
 - The guided tour labels important boundaries: drafts are not live campaigns, and the current app does not execute live provider-side budget changes. Use sanitized fictional data in any public recording.
 - CodeQL can still analyze the code when GitHub code-scanning upload is unavailable. The workflow uploads SARIF only when the repository variable `CODE_SCANNING_ENABLED` is explicitly set to `true`; enable it only after GitHub code scanning is available for this repository. Without upload entitlement, analysis runs but results are not published to the Security tab.
 - A passing typecheck/build or a static migration-contract test does not replace staging browser E2E or security review.
+
+
+## Phase 3: durable finance proposals and review
+
+- Added `supabase/migrations/20261023_durable_finance_workflows.sql` for tenant-scoped proposal records and organization control records.
+- Proposal creation and review use service-role-only security-definer RPCs. Membership/role checks, four-eyes review, emergency-stop checks, campaign-version validation, campaign budget updates and audit-event append happen transactionally.
+- Stale campaign versions are marked stale; concurrent or already-reviewed proposals return conflicts. Budget approval updates the internal durable draft only and explicitly does not claim a provider-side budget write.
+- Vercel finance proposal GET/POST/review routes use the durable repository when Supabase server configuration is present; if the database is not configured or the migration is absent, requests fail closed rather than using ephemeral state.
+- Added static migration/repository contract tests. These do not execute SQL against the user's Supabase instance; apply the migration in staging and perform browser E2E before relying on the workflow.
+- Added a customer Product Demo view with guided chapters and an optional hosted video player. A narrated video still must be recorded/hosted and configured via `VITE_PRODUCT_DEMO_VIDEO_URL`.
