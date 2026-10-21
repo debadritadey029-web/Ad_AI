@@ -174,11 +174,16 @@ export const ChannelsView: React.FC = () => {
                     Adapter implemented. Official OAuth approval or credentials required for live synchronization.
                   </p>
                   <button
-                    onClick={() => showToast(`OAuth flow for ${cap.displayName} initiated (Sandbox/Demo Mode)`, 'info')}
-                    className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-blue-400 text-xs font-semibold rounded-lg transition"
+                    type="button"
+                    disabled
+                    title="OAuth authorization is not implemented for this provider yet."
+                    className="w-full py-2 bg-slate-800 text-slate-400 text-xs font-semibold rounded-lg cursor-not-allowed"
                   >
-                    Connect Account
+                    OAuth setup required
                   </button>
+                  <p className="text-[10px] leading-relaxed text-amber-300/90">
+                    This provider is listed in the catalog; live account authorization is not yet available here.
+                  </p>
                 </div>
               )}
 
