@@ -40,3 +40,6 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: '/language:javascript-typescript'
+          # Private repositories without GitHub code-scanning entitlement can still run
+          # the static analysis; upload is enabled only after the repository feature is available.
+          upload: ${{ vars.CODE_SCANNING_ENABLED == 'true' }}
