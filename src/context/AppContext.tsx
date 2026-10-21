@@ -222,7 +222,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         body: JSON.stringify({ orgId }),
       });
       if (res.ok) {
-        await refreshContext();
+        const data = await res.json();
+        if (data.currentOrg) setCurrentOrg(data.currentOrg);
+        if (data.membership) setMembership(data.membership);
+        if (data.permissions) setPermissions(data.permissions);
         showToast('Switched organization workspace', 'success');
       } else {
         const err = await res.json();
