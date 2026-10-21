@@ -19,6 +19,14 @@ This document records the scope of the critical-security remediation branch. It 
 - Campaign and lead statuses, emergency-stop actions, budget review actions, provider IDs, and provider-sync permissions receive additional validation.
 - Added regression tests for production demo/OTP-code policy and session membership requirements.
 
+## Vercel API and health checks
+
+- The repository now includes `api/[...path].ts`, a Vercel Node.js catch-all that mounts the secured Express API; `vercel.json` leaves API function routing to Vercel and retains the SPA fallback for frontend routes.
+- The catch-all has a regression test for protected-route authorization and baseline security headers.
+- Public `/api/health` no longer reports tenant/user/campaign counts. It reports process liveness only and explicitly does not claim production readiness.
+- `/api/health/ready` deliberately returns HTTP 503 until durable transactional tenant-scoped persistence is implemented. This is an intentional release gate, not a failed Supabase login.
+- CI now runs on pushes to this branch and a separate CodeQL workflow performs scheduled and pull-request JavaScript/TypeScript analysis. Wait for the new checks to finish before treating the latest commit as validated.
+
 ## Explicit release blockers still open
 
 1. **Production authentication delivery:** configure and implement an email/SMS OTP provider (including delivery errors, retry handling, verification limits, and operational monitoring) before production login can be enabled.
