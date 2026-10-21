@@ -54,7 +54,7 @@ export async function supabaseSignInWithOtp(params: {
     return client.auth.signInWithOtp({
       email: params.email,
       options: {
-        shouldCreateUser: true,
+        shouldCreateUser: false,
       },
     });
   }
@@ -63,7 +63,7 @@ export async function supabaseSignInWithOtp(params: {
     return client.auth.signInWithOtp({
       phone: params.phone,
       options: {
-        shouldCreateUser: true,
+        shouldCreateUser: false,
       },
     });
   }
