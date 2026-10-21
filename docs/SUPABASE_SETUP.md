@@ -17,8 +17,9 @@ If you have not already run the base schema, apply `supabase/schema.sql` first, 
 1. In Authentication → Providers → Email, enable email sign-in.
 2. In Authentication → URL Configuration, set the Site URL to your staging URL and add the exact staging URL and localhost URL to allowed redirect URLs if needed.
 3. Configure custom SMTP in Authentication → SMTP Settings for reliable email delivery.
-4. In Authentication → Rate Limits, retain rate limiting and choose conservative OTP limits.
-5. Create/invite tester accounts under Authentication → Users. Testers must use an email they can access. Confirm the email before sign-in; this app deliberately does not auto-create app accounts from arbitrary email addresses.
+4. In Authentication → Email Templates, ensure the email OTP template displays the numeric token using `{{ .Token }}`; the app expects a six-digit code, not only a magic-link button.
+5. In Authentication → Rate Limits, retain rate limiting and choose conservative OTP limits.
+6. Create/invite tester accounts under Authentication → Users. Testers must use an email they can access. Confirm the email before sign-in; this app deliberately does not auto-create app accounts from arbitrary email addresses.
 
 The current UI uses email OTP. SMS OTP and password + second factor are not part of this Supabase flow yet.
 
