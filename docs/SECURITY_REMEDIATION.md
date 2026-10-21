@@ -33,7 +33,7 @@ This document records the scope of the critical-security remediation branch. It 
 - Campaign list/create/status operations use the normalized repository whenever Supabase server credentials are configured. Database errors fail closed; they never fall back to the process-local map.
 - Campaign status updates use optimistic version checks; concurrent stale writes return a conflict instead of overwriting newer state.
 - Campaign creation and status changes append hash-chained audit events inside the same database transaction as the campaign mutation.
-- On Vercel, whole-state snapshot writes are disabled. Mutations for other domains that do not yet have durable transactional repositories return HTTP 503 after authentication; they do not claim success based on an ephemeral in-memory write.
+- On Vercel, whole-state snapshot writes are disabled. Reads and mutations for other domains that do not yet have durable transactional repositories return HTTP 503 after authentication; they do not expose seeded snapshot data as customer data or claim success based on an ephemeral in-memory write.
 - New database contract tests check tenant scoping, optimistic concurrency, audit chaining, and the serverless write gate.
 
 ### Phase 2 scope limitation
