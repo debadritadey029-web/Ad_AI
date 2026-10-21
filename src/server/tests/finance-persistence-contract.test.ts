@@ -18,6 +18,8 @@ test('durable finance schema is tenant-scoped and access is server-only', () => 
 test('proposal creation and review enforce role, four-eyes, emergency stop and stale-version checks transactionally', () => {
   assert.match(migration, /app_create_budget_proposal/i);
   assert.match(migration, /app_review_budget_proposal/i);
+  assert.match(migration, /app_set_emergency_stop/i);
+  assert.match(migration, /provider_pause_performed', false/i);
   assert.match(migration, /four_eyes_violation/i);
   assert.match(migration, /emergency_stop_active/i);
   assert.match(migration, /campaign_version_at_request/i);
