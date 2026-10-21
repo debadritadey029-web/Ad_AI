@@ -48,6 +48,7 @@ import {
   getDurableCampaignForFinance,
   createDurableBudgetProposal,
   reviewDurableBudgetProposal,
+  setDurableEmergencyStop,
 } from './db/finance-repository.js';
 import { createRateLimiter } from './middleware/security.js';
 import { isDemoAuthEnabled, isProduction, shouldExposeDevOtpCode } from './services/security-mode.js';
@@ -1245,81 +1246,66 @@ apiRouter.post('/finance/proposals/:id/review', async (req: ContextRequest, res:
 // 5. Emergency Stop Killswitch
 // ---------------------------------------------------------------------------
 
-apiRouter.post('/finance/emergency-stop', (req: ContextRequest, res: Response) => {
-  const { action, reason } = req.body; // action: 'TRIGGER' | 'RELEASE'
+apiRouter.post('/finance/emergency-stop', async (req: ContextRequest, res: Response) => {
+  const { action, reason } = req.body || {};
   const org = req.org!;
   const user = req.user!;
   const membership = req.membership!;
-
   if (action !== 'TRIGGER' && action !== 'RELEASE') {
     return res.status(400).json({ error: 'INVALID_EMERGENCY_STOP_ACTION', message: 'Action must be TRIGGER or RELEASE.' });
   }
   const reqPerm = action === 'TRIGGER' ? 'TRIGGER_EMERGENCY_STOP' : 'RELEASE_EMERGENCY_STOP';
   if (!hasPermission(membership.role, reqPerm)) {
-    return res.status(403).json({ error: `Permission denied: Requires ${reqPerm}.` });
+    return res.status(403).json({ error: 'FORBIDDEN', message: `Permission denied: Requires ${reqPerm}.` });
+  }
+  if (isDurableFinancePersistenceEnabled()) {
+    try {
+      const result = await setDurableEmergencyStop({
+        orgId: org.id, action,
+        reason: typeof reason === 'string' ? reason.trim().slice(0, 1000) : undefined,
+      }, { userId: user.id, email: user.email, role: membership.role });
+      return res.json({
+        success: true, ...result,
+        message: action === 'TRIGGER'
+          ? 'Emergency stop is persisted. Internal active campaign records were paused; no provider-side pause request was sent.'
+          : 'Emergency stop released. Provider-side campaigns were not changed.',
+        providerWritePerformed: false,
+      });
+    } catch (error) {
+      const e = error as CampaignRepositoryError;
+      const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'CONFLICT' ? 409 : e.code === 'NOT_CONFIGURED' ? 403 : 503;
+      return res.status(status).json({ error: e.code, message: e.message });
+    }
   }
 
   if (action === 'TRIGGER') {
     org.emergencyStopActive = true;
-    org.emergencyStopReason = reason || 'Immediate operational containment requested.';
+    org.emergencyStopReason = typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 1000) : 'Immediate operational containment requested.';
     org.emergencyStopTriggeredAt = new Date().toISOString();
     org.emergencyStopTriggeredBy = user.name;
-
-    // Pause all active campaigns in org as precaution
     let pausedCount = 0;
     for (const cmp of globalStore.campaigns.values()) {
-      if (cmp.orgId === org.id && cmp.status === 'ACTIVE') {
-        cmp.status = 'PAUSED';
-        cmp.version += 1;
-        pausedCount++;
-      }
+      if (cmp.orgId === org.id && cmp.status === 'ACTIVE') { cmp.status = 'PAUSED'; cmp.version += 1; pausedCount++; }
     }
-
     const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
-    const log = createAuditLogEntry({
-      orgId: org.id,
-      actorUserId: user.id,
-      actorEmail: user.email,
-      actorRole: membership.role,
-      action: 'EMERGENCY_STOP_TRIGGERED',
-      entityType: 'ORGANIZATION',
-      entityId: org.id,
-      prevHash: prevLog?.hash,
-      details: { reason, pausedCampaignsCount: pausedCount },
-    });
-    globalStore.auditLogs.push(log);
+    globalStore.auditLogs.push(createAuditLogEntry({
+      orgId: org.id, actorUserId: user.id, actorEmail: user.email, actorRole: membership.role,
+      action: 'EMERGENCY_STOP_TRIGGERED', entityType: 'ORGANIZATION', entityId: org.id, prevHash: prevLog?.hash,
+      details: { reason: org.emergencyStopReason, pausedCampaignsCount: pausedCount, providerWritePerformed: false },
+    }));
     persistCurrentStore();
-
-    res.json({
-      success: true,
-      message: 'Emergency stop is active in the local workspace. Campaign records were marked paused locally; no live provider pause API is configured.',
-      org,
-    });
-  } else {
-    org.emergencyStopActive = false;
-    org.emergencyStopReason = undefined;
-
-    const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
-    const log = createAuditLogEntry({
-      orgId: org.id,
-      actorUserId: user.id,
-      actorEmail: user.email,
-      actorRole: membership.role,
-      action: 'EMERGENCY_STOP_RELEASED',
-      entityType: 'ORGANIZATION',
-      entityId: org.id,
-      prevHash: prevLog?.hash,
-      details: { releasedBy: user.email },
-    });
-    globalStore.auditLogs.push(log);
-    persistCurrentStore();
-
-    res.json({
-      success: true,
-      message: 'Emergency Stop released. Normal operational safeguards restored.',
-      org,
-    });
+    return res.json({ success: true, message: 'Emergency stop is active in the local workspace. Internal records were paused; no live provider pause API is configured.', org, providerWritePerformed: false });
   }
+  org.emergencyStopActive = false;
+  org.emergencyStopReason = undefined;
+  const prevLog = globalStore.auditLogs[globalStore.auditLogs.length - 1];
+  globalStore.auditLogs.push(createAuditLogEntry({
+    orgId: org.id, actorUserId: user.id, actorEmail: user.email, actorRole: membership.role,
+    action: 'EMERGENCY_STOP_RELEASED', entityType: 'ORGANIZATION', entityId: org.id, prevHash: prevLog?.hash,
+    details: { releasedBy: user.email, providerWritePerformed: false },
+  }));
+  persistCurrentStore();
+  return res.json({ success: true, message: 'Emergency Stop released. No provider-side action was performed.', org, providerWritePerformed: false });
 });
 
 // ---------------------------------------------------------------------------
