@@ -86,6 +86,20 @@ Add these under Vercel → Project → Settings → Environment Variables, for *
 
 For Vercel Production, set `APP_ENV=production`, `ENABLE_DEMO_AUTH=false`, and `ENABLE_DEV_OTP_CODE=false`. GitHub Actions repository secrets do **not** automatically become Vercel runtime environment variables; set the runtime values in Vercel's environment settings as well. Never paste secrets into chat, source files, or screenshots.
 
+## Transactional campaign persistence migration
+
+After `20261021_harden_auth_and_rls.sql` has been applied, run `supabase/migrations/20261022_normalized_campaign_persistence.sql` in the same Supabase project before testing campaign operations. This creates the durable campaign table and service-role-only RPCs, plus transactionally hash-chained campaign audit events.
+
+After the migration and a fresh Vercel Preview deployment:
+
+- `GET /api/campaigns` reads campaigns for the selected active organization from PostgreSQL.
+- Campaign creation persists as a local `DRAFT` and writes its audit event atomically.
+- Campaign status changes use a version check; stale concurrent writes should return HTTP 409.
+- If the migration or database is unavailable, campaign reads/writes fail closed rather than silently using a local snapshot.
+- Writes to finance, organization settings, providers, creatives and leads remain deliberately disabled in Vercel until their own durable repositories are implemented.
+
+The migration is committed in GitHub; it is **not automatically applied** to your Supabase project by this code change.
+
 ## Vercel API routing note
 
 The branch includes a Vercel serverless catch-all at `api/[...path].ts`. Vercel should route `/api/*` to this function and all other frontend paths to the SPA. After a Preview deployment, verify:
