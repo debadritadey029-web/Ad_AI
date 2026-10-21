@@ -7,7 +7,7 @@ export const isProduction = (
   appEnv: string | undefined = process.env.APP_ENV,
   vercelEnv: string | undefined = process.env.VERCEL_ENV
 ): boolean => {
-  if (vercelEnv === 'production') return true;
+  if (vercelEnv === 'production' || appEnv === 'production') return true;
   if (vercelEnv === 'preview' || appEnv === 'staging') return false;
   return nodeEnv === 'production';
 };
