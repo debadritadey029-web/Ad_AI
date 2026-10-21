@@ -329,6 +329,9 @@ export function verifyOtp(params: {
   if (!record) {
     return { success: false, error: 'OTP_NOT_FOUND', message: 'No active verification code found for this destination.' };
   }
+  if (params.purpose && record.purpose !== params.purpose) {
+    return { success: false, error: 'OTP_PURPOSE_MISMATCH', message: 'This verification code cannot be used for this authentication step.' };
+  }
 
   // Check expiration
   if (new Date(record.expiresAt) < new Date()) {
