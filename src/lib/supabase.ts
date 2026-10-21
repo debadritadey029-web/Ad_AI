@@ -102,3 +102,12 @@ export async function supabaseVerifyOtp(params: {
 
   return { data: null, error: new Error('Either email or phone is required.') };
 }
+
+
+/** Returns the configured browser client or fails clearly when Vercel variables are missing. */
+export function getSupabaseBrowserClient(): SupabaseClient {
+  if (!client) {
+    throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
+  }
+  return client;
+}
