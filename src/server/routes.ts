@@ -224,8 +224,21 @@ apiRouter.use(resolveContext);
 // In Vercel, block writes to domains that have not yet been migrated to durable
 // transactional repositories. Never acknowledge a process-local mutation as durable.
 apiRouter.use((req: ContextRequest, res: Response, next: NextFunction) => {
-  if (!process.env.VERCEL || !['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
-  if (req.path.startsWith('/auth/')) return next();
+  if (!process.env.VERCEL || req.path.startsWith('/auth/')) return next();
+
+  // Do not expose seeded process-local records as if they were customer data.
+  // These read models are not yet backed by tenant-scoped durable repositories.
+  const durableReadRequired = new Set([
+    '/finance/proposals', '/providers', '/analytics', '/creatives', '/leads', '/audit',
+  ]);
+  if (req.method === 'GET' && durableReadRequired.has(req.path)) {
+    return res.status(503).json({
+      error: 'DURABLE_PERSISTENCE_NOT_IMPLEMENTED',
+      message: 'This data view is temporarily unavailable in serverless staging until its tenant-scoped durable repository is deployed. No demo snapshot data is returned.',
+    });
+  }
+
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
   const durableCampaignWrite =
     (req.method === 'POST' && req.path === '/campaigns') ||
     (req.method === 'PATCH' && /^\/campaigns\/[^/]+\/status$/.test(req.path));
