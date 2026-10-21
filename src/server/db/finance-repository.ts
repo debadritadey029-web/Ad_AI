@@ -106,3 +106,20 @@ export async function reviewDurableBudgetProposal(input: {
   if (!row) throw new CampaignRepositoryError('Budget proposal review returned no persisted record.', 'DATABASE_ERROR');
   return mapProposal(row as Record<string, any>);
 }
+
+export async function setDurableEmergencyStop(input: {
+  orgId: string; action: 'TRIGGER' | 'RELEASE'; reason?: string;
+}, actor: FinanceActor): Promise<{ active: boolean; reason?: string; triggeredAt?: string; triggeredBy?: string }> {
+  const { data, error } = await clientOrThrow().rpc('app_set_emergency_stop', {
+    p_org_id: input.orgId, p_action: input.action, p_reason: input.reason || null, p_actor: actorPayload(actor),
+  });
+  if (error) financeError(error);
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new CampaignRepositoryError('Emergency stop operation returned no persisted record.', 'DATABASE_ERROR');
+  return {
+    active: Boolean(row.emergency_stop_active),
+    reason: row.emergency_stop_reason || undefined,
+    triggeredAt: row.emergency_stop_triggered_at || undefined,
+    triggeredBy: row.emergency_stop_triggered_by || undefined,
+  };
+}
