@@ -143,3 +143,10 @@ test('Auth 2FA: Two-step challenge lifecycle for password credentials', () => {
   assert.equal(res.session?.userId, 'usr_sarah');
 });
 
+
+test('Auth: sessions cannot be issued without an active user organization membership', () => {
+  assert.throws(
+    () => createSession({ userId: 'usr_not_registered', activeOrgId: 'org_apex' }),
+    /ACTIVE_MEMBERSHIP_REQUIRED/
+  );
+});
