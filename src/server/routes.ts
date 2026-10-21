@@ -646,8 +646,12 @@ apiRouter.post('/auth/switch-context', (req: ContextRequest, res: Response) => {
     return res.status(403).json({ error: 'TENANT_ACCESS_DENIED', message: 'You do not have active membership in that organization.' });
   }
 
-  session.activeOrgId = org.id;
-  persistCurrentStore();
+  // Supabase access-token sessions are stateless; tenant selection is supplied
+  // per request and revalidated by resolveContext. Legacy sessions may persist it.
+  if (session) {
+    session.activeOrgId = org.id;
+    persistCurrentStore();
+  }
   res.json({
     success: true,
     user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl },
