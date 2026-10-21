@@ -19,12 +19,12 @@ test('proposal creation and review enforce role, four-eyes, emergency stop and s
   assert.match(migration, /app_create_budget_proposal/i);
   assert.match(migration, /app_review_budget_proposal/i);
   assert.match(migration, /app_set_emergency_stop/i);
-  assert.match(migration, /provider_pause_performed',\\s*false/i);
+  assert.match(migration, /provider_pause_performed',\s*false/i);
   assert.match(migration, /four_eyes_violation/i);
   assert.match(migration, /emergency_stop_active/i);
   assert.match(migration, /campaign_version_at_request/i);
   assert.match(migration, /perform public\.app_append_audit_event/i);
-  assert.match(migration, /provider_write_performed',\\s*false/i);
+  assert.match(migration, /provider_write_performed',\s*false/i);
 });
 
 test('server finance API uses durable repository and does not silently fall back on durable errors', () => {
