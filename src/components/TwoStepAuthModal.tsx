@@ -343,7 +343,7 @@ export const TwoStepAuthModal: React.FC<TwoStepAuthModalProps> = ({ isOpen, onCl
                   >
                     Direct OTP (Passwordless)
                   </button>
-                  {!isSupabaseConfigured && (<button
+                  {!isSupabaseConfigured() && (<button
                     onClick={() => setAuthMode('PASSWORD_2FA')}
                     className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition ${
                       authMode === 'PASSWORD_2FA'
@@ -370,7 +370,7 @@ export const TwoStepAuthModal: React.FC<TwoStepAuthModalProps> = ({ isOpen, onCl
                         <Mail className="w-4 h-4" />
                         <span>Email OTP</span>
                       </button>
-                      {!isSupabaseConfigured && (<button
+                      {!isSupabaseConfigured() && (<button
                         onClick={() => setChannel('phone')}
                         className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-medium transition ${
                           channel === 'phone'
@@ -498,7 +498,7 @@ export const TwoStepAuthModal: React.FC<TwoStepAuthModalProps> = ({ isOpen, onCl
                   </>
                 )}
 
-                {!isSupabaseConfigured && (
+                {!isSupabaseConfigured() && (
                 {/* Tester Quick Pre-fill helpers */}
                 <div className="mt-4 pt-4 border-t border-slate-800/80">
                   <p className="text-[11px] font-semibold text-slate-400 mb-2">
