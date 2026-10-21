@@ -206,6 +206,9 @@ apiRouter.post('/auth/otp/verify', authLimiter, (req: Request, res: Response) =>
   if (!target || !code) {
     return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Target (email/phone) and 6-digit code are required.' });
   }
+  if (isProduction()) {
+    return res.status(503).json({ error: 'OTP_DELIVERY_NOT_CONFIGURED', message: 'OTP verification is unavailable until secure email/SMS delivery is configured.' });
+  }
 
   const effectiveChannel: 'email' | 'phone' =
     channel === 'phone' || (!target.includes('@') && /[\d+]/.test(target)) ? 'phone' : 'email';
@@ -285,6 +288,9 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
+  }
+  if (isProduction()) {
+    return res.status(503).json({ error: 'SECURE_LOGIN_NOT_CONFIGURED', message: 'Production sign-in is unavailable until secure two-factor delivery is configured.' });
   }
 
   const user = Array.from(globalStore.users.values()).find(
@@ -751,10 +757,11 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
     id,
     orgId: org.id,
     provider,
-    providerAccountId: providerAccountId || 'act_default',
+    providerAccountId: providerAccountId || 'unlinked',
     name: name.trim(),
     objective: objective || 'CONVERSIONS',
-    status: 'ACTIVE',
+    // Creating a local record does not publish it to an advertising platform.
+    status: 'DRAFT',
     budgetType: budgetType || 'DAILY',
     budgetMinorUnits,
     currency: campCurrency,
@@ -808,6 +815,13 @@ apiRouter.patch('/campaigns/:id/status', (req: ContextRequest, res: Response) =>
 
   if (!hasPermission(membership.role, 'EDIT_CAMPAIGNS')) {
     return res.status(403).json({ error: 'Permission denied: Requires EDIT_CAMPAIGNS permission.' });
+  }
+  const validStatuses = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'ACTIVE', 'PAUSED', 'COMPLETED', 'REJECTED'];
+  if (typeof status !== 'string' || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'INVALID_CAMPAIGN_STATUS', message: 'Status must be a supported campaign status.' });
+  }
+  if (status === 'ACTIVE') {
+    return res.status(501).json({ error: 'PROVIDER_WRITE_NOT_IMPLEMENTED', message: 'Campaign activation is unavailable because live provider publishing is not implemented. The campaign remains unchanged.' });
   }
 
   const campaign = globalStore.campaigns.get(id);
@@ -982,11 +996,17 @@ apiRouter.post('/finance/proposals/:id/review', (req: ContextRequest, res: Respo
     });
   }
 
+  if (action !== 'APPROVE' && action !== 'REJECT') {
+    return res.status(400).json({ error: 'INVALID_REVIEW_ACTION', message: 'Action must be APPROVE or REJECT.' });
+  }
+
   if (action === 'APPROVE') {
-    proposal.status = 'EXECUTED';
+    // This application has no live provider budget-write adapter. Approval is recorded
+    // as APPROVED (not EXECUTED) and only updates the internal draft configuration.
+    proposal.status = 'APPROVED';
     proposal.reviewedByUserId = user.id;
     proposal.reviewedAt = new Date().toISOString();
-    proposal.reviewNotes = notes || 'Approved and executed under financial authority.';
+    proposal.reviewNotes = notes || 'Approved in the local workspace only; no provider-side budget update was executed.';
 
     // Execute change on campaign
     campaign.budgetMinorUnits = proposal.proposedBudgetMinorUnits;
@@ -999,7 +1019,7 @@ apiRouter.post('/finance/proposals/:id/review', (req: ContextRequest, res: Respo
       actorUserId: user.id,
       actorEmail: user.email,
       actorRole: membership.role,
-      action: 'BUDGET_PROPOSAL_APPROVED_AND_EXECUTED',
+      action: 'BUDGET_PROPOSAL_APPROVED_LOCAL_ONLY',
       entityType: 'PROPOSAL',
       entityId: id,
       prevHash: prevLog?.hash,
@@ -1083,7 +1103,7 @@ apiRouter.post('/finance/emergency-stop', (req: ContextRequest, res: Response) =
 
     res.json({
       success: true,
-      message: 'EMERGENCY STOP ACTIVATED: All provider write actions halted and active campaigns paused.',
+      message: 'Emergency stop is active in the local workspace. Campaign records were marked paused locally; no live provider pause API is configured.',
       org,
     });
   } else {
@@ -1137,11 +1157,15 @@ apiRouter.post('/providers/:id/sync', (req: ContextRequest, res: Response) => {
     return res.status(404).json({ error: 'Connection not found in active organization.' });
   }
 
-  conn.syncStatus = 'HEALTHY';
-  conn.lastSyncAt = new Date().toISOString();
+  // Never report a healthy sync without making a real provider API request.
+  conn.syncStatus = 'ERROR';
+  conn.errorMessage = 'Live provider synchronization is not implemented for this connection.';
   persistCurrentStore();
-
-  res.json({ success: true, connection: conn });
+  res.status(501).json({
+    error: 'PROVIDER_SYNC_NOT_IMPLEMENTED',
+    message: 'This connector is catalog-only. No live provider API request was made.',
+    connection: conn,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1318,6 +1342,10 @@ apiRouter.patch('/leads/:id/status', (req: ContextRequest, res: Response) => {
     return res.status(404).json({ error: 'Lead not found in active organization.' });
   }
 
+  const validStatuses = ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'DISQUALIFIED'];
+  if (typeof status !== 'string' || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'INVALID_LEAD_STATUS', message: 'Status must be NEW, CONTACTED, QUALIFIED, CONVERTED, or DISQUALIFIED.' });
+  }
   lead.status = status;
   persistCurrentStore();
   res.json(lead);
