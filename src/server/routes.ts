@@ -666,7 +666,12 @@ apiRouter.post('/auth/switch-context', (req: ContextRequest, res: Response) => {
 // ---------------------------------------------------------------------------
 
 apiRouter.get('/organizations', (req: ContextRequest, res: Response) => {
-  res.json(Array.from(globalStore.organizations.values()));
+  const userId = req.user!.id;
+  const visibleOrganizations = Array.from(globalStore.memberships.values())
+    .filter((membership) => membership.userId === userId && membership.status === 'ACTIVE')
+    .map((membership) => globalStore.organizations.get(membership.orgId))
+    .filter((organization): organization is Organization => Boolean(organization));
+  res.json(visibleOrganizations);
 });
 
 apiRouter.patch('/organizations/settings', (req: ContextRequest, res: Response) => {
