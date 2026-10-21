@@ -868,7 +868,35 @@ apiRouter.post('/campaigns', async (req: ContextRequest, res: Response) => {
     return res.status(400).json({ error: 'Valid positive budget amount is required.' });
   }
 
-  const campCurrency = currency || org.defaultCurrency;
+  const validObjectives = ['AWARENESS', 'TRAFFIC', 'ENGAGEMENT', 'LEADS', 'APP_PROMOTION', 'CONVERSIONS'];
+  const selectedObjective = objective || 'CONVERSIONS';
+  if (typeof selectedObjective !== 'string' || !validObjectives.includes(selectedObjective)) {
+    return res.status(400).json({ error: 'INVALID_CAMPAIGN_OBJECTIVE', message: 'Select a supported campaign objective.' });
+  }
+  const selectedBudgetType = budgetType || 'DAILY';
+  if (selectedBudgetType !== 'DAILY' && selectedBudgetType !== 'LIFETIME') {
+    return res.status(400).json({ error: 'INVALID_BUDGET_TYPE', message: 'Budget type must be DAILY or LIFETIME.' });
+  }
+
+  const campCurrency = String(currency || org.defaultCurrency).toUpperCase();
+  if (!/^[A-Z]{3}$/.test(campCurrency)) {
+    return res.status(400).json({ error: 'INVALID_CURRENCY', message: 'Currency must be a valid three-letter ISO currency code.' });
+  }
+  try {
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: campCurrency });
+  } catch {
+    return res.status(400).json({ error: 'INVALID_CURRENCY', message: 'Currency must be a supported ISO currency code.' });
+  }
+
+  const parsedStartDate = new Date(startDate || Date.now());
+  const parsedEndDate = endDate ? new Date(endDate) : undefined;
+  if (Number.isNaN(parsedStartDate.getTime()) || (parsedEndDate && Number.isNaN(parsedEndDate.getTime()))) {
+    return res.status(400).json({ error: 'INVALID_CAMPAIGN_DATES', message: 'Start and end dates must be valid dates.' });
+  }
+  if (parsedEndDate && parsedEndDate < parsedStartDate) {
+    return res.status(400).json({ error: 'INVALID_CAMPAIGN_DATES', message: 'End date cannot be earlier than start date.' });
+  }
+
   const budgetMinorUnits = toMinorUnits(Number(budgetAmount), campCurrency);
 
   // Validate provider minimum budget
@@ -891,14 +919,14 @@ apiRouter.post('/campaigns', async (req: ContextRequest, res: Response) => {
     provider: provider as ProviderType,
     providerAccountId: providerAccountId || 'unlinked',
     name: name.trim(),
-    objective: objective || 'CONVERSIONS',
+    objective: selectedObjective as Campaign['objective'],
     // Creating a local record does not publish it to an advertising platform.
     status: 'DRAFT',
-    budgetType: budgetType || 'DAILY',
+    budgetType: selectedBudgetType,
     budgetMinorUnits,
     currency: campCurrency,
-    startDate: startDate || new Date().toISOString(),
-    endDate,
+    startDate: parsedStartDate.toISOString(),
+    endDate: parsedEndDate?.toISOString(),
     targeting: targeting || {
       locations: ['United States'],
       ageMin: 18,
