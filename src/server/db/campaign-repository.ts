@@ -82,7 +82,13 @@ export async function listCampaignsForOrganization(orgId: string): Promise<Campa
   return (data || []).map((row) => mapRow(row as Record<string, any>));
 }
 
-export async function createDurableCampaign(campaign: Campaign): Promise<Campaign> {
+export interface CampaignAuditActor { userId: string; email: string; role: string; }
+
+function toAuditActor(actor: CampaignAuditActor) {
+  return { user_id: actor.userId, email: actor.email, role: actor.role };
+}
+
+export async function createDurableCampaign(campaign: Campaign, actor: CampaignAuditActor): Promise<Campaign> {
   const client = clientOrThrow();
   const payload = {
     id: campaign.id,
@@ -101,7 +107,7 @@ export async function createDurableCampaign(campaign: Campaign): Promise<Campaig
     ad_group_count: campaign.adGroupCount,
     creative_ids: campaign.creativeIds,
   };
-  const { data, error } = await client.rpc('app_create_campaign', { p_campaign: payload });
+  const { data, error } = await client.rpc('app_create_campaign', { p_campaign: payload, p_actor: toAuditActor(actor) });
   if (error) throwDatabaseError(error);
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) throw new CampaignRepositoryError('Campaign creation returned no persisted record.', 'DATABASE_ERROR');
@@ -112,7 +118,8 @@ export async function updateDurableCampaignStatus(
   orgId: string,
   campaignId: string,
   expectedVersion: number,
-  status: Exclude<CampaignStatus, 'ACTIVE'>
+  status: Exclude<CampaignStatus, 'ACTIVE'>,
+  actor: CampaignAuditActor
 ): Promise<Campaign> {
   const client = clientOrThrow();
   const { data, error } = await client.rpc('app_update_campaign_status', {
@@ -120,6 +127,7 @@ export async function updateDurableCampaignStatus(
     p_campaign_id: campaignId,
     p_expected_version: expectedVersion,
     p_new_status: status,
+    p_actor: toAuditActor(actor),
   });
   if (error) throwDatabaseError(error);
   const row = Array.isArray(data) ? data[0] : data;
