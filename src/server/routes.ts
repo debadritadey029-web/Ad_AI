@@ -35,7 +35,7 @@ import {
   normalizePhone,
   maskContact,
 } from './services/auth.js';
-import { getSupabaseServerStatus, testSupabaseConnection } from './db/supabase.js';
+import { getSupabaseServerStatus, testSupabaseConnection, resolveSupabaseProvisionedIdentity } from './db/supabase.js';
 import { createRateLimiter } from './middleware/security.js';
 import { isDemoAuthEnabled, isProduction, shouldExposeDevOtpCode } from './services/security-mode.js';
 import {
@@ -70,8 +70,7 @@ export interface ContextRequest extends Request {
  * Middleware that resolves the authenticated user, session, and tenant organization.
  * Requires a valid session token for every non-public route.
  */
-function resolveContext(req: ContextRequest, res: Response, next: NextFunction) {
-  // Allow public authentication, OTP, and status endpoints to pass through without requiring active session
+async function resolveContext(req: ContextRequest, res: Response, next: NextFunction) {
   const publicPaths = [
     '/health',
     '/health/ready',
@@ -83,13 +82,9 @@ function resolveContext(req: ContextRequest, res: Response, next: NextFunction) 
     '/auth/otp/verify',
     '/auth/demo-login',
   ];
-  if (publicPaths.some((p) => req.path.endsWith(p) || req.path === p)) {
-    return next();
-  }
+  if (publicPaths.some((p) => req.path.endsWith(p) || req.path === p)) return next();
 
   const token = extractAuthToken(req);
-  let session: Session | null = null;
-
   if (!token) {
     return res.status(401).json({
       error: 'UNAUTHENTICATED',
@@ -97,42 +92,64 @@ function resolveContext(req: ContextRequest, res: Response, next: NextFunction) 
     });
   }
 
-  session = validateSessionToken(token);
-  if (!session) {
-    return res.status(401).json({
-      error: 'INVALID_SESSION',
-      message: 'Provided session token is invalid or expired. Please re-authenticate.',
-    });
+  const session = validateSessionToken(token);
+  let user: User | undefined;
+  let org: Organization | undefined;
+  let membership: Membership | undefined;
+
+  if (session) {
+    user = globalStore.users.get(session.userId);
+    if (!user) {
+      return res.status(401).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
+    }
+
+    const requestedOrgId = (req.headers['x-organization-id'] as string) || session.activeOrgId;
+    org = globalStore.organizations.get(requestedOrgId);
+    if (!org) {
+      return res.status(404).json({ error: 'ORGANIZATION_NOT_FOUND', message: 'Organization not found.' });
+    }
+    membership = Array.from(globalStore.memberships.values()).find(
+      (m) => m.userId === user!.id && m.orgId === org!.id && m.status === 'ACTIVE'
+    );
+  } else {
+    // Supabase Auth access tokens are verified remotely with Supabase Auth.
+    // The matching app user and ACTIVE membership must also be explicitly provisioned
+    // in Supabase's application tables and mirrored in the application store.
+    const requestedOrgId = req.headers['x-organization-id'] as string | undefined;
+    const identity = await resolveSupabaseProvisionedIdentity(token, requestedOrgId);
+    if (!identity) {
+      return res.status(401).json({
+        error: 'INVALID_OR_UNPROVISIONED_SUPABASE_SESSION',
+        message: 'Your Supabase session is invalid or your account has no active AdVantage AI organization membership.',
+      });
+    }
+
+    user = globalStore.users.get(identity.appUserId);
+    org = globalStore.organizations.get(identity.organizationId);
+    if (!user || user.email.trim().toLowerCase() !== identity.email) {
+      return res.status(403).json({
+        error: 'APP_ACCOUNT_NOT_PROVISIONED',
+        message: 'Your Supabase account is not yet provisioned in AdVantage AI. Ask your organization administrator.',
+      });
+    }
+    membership = Array.from(globalStore.memberships.values()).find(
+      (m) => m.userId === user!.id &&
+        m.orgId === identity.organizationId &&
+        m.status === 'ACTIVE' &&
+        m.role === identity.role
+    );
   }
 
-  // Determine user only from the verified session.
-  const userId = session.userId;
-  const user = globalStore.users.get(userId);
-  if (!user) {
-    return res.status(401).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
-  }
-
-  // Determine requested org: header override, or session active org, or fallback
-  const requestedOrgId =
-    (req.headers['x-organization-id'] as string) || session.activeOrgId;
-
-  const org = globalStore.organizations.get(requestedOrgId);
   if (!org) {
     return res.status(404).json({
       error: 'ORGANIZATION_NOT_FOUND',
-      message: `Organization '${requestedOrgId}' does not exist.`,
+      message: 'The selected organization is not available in this application environment.',
     });
   }
-
-  // Enforce Tenant Isolation: User must have ACTIVE membership in the requested org
-  const membership = Array.from(globalStore.memberships.values()).find(
-    (m) => m.userId === user.id && m.orgId === org.id && m.status === 'ACTIVE'
-  );
-
   if (!membership) {
     return res.status(403).json({
       error: 'TENANT_ACCESS_DENIED',
-      message: `Access denied: User '${user.name}' has no active membership in organization '${org.name}'. Cross-tenant access is prohibited.`,
+      message: 'No matching active organization membership is available. Cross-tenant access is prohibited.',
     });
   }
 
@@ -140,9 +157,8 @@ function resolveContext(req: ContextRequest, res: Response, next: NextFunction) 
   req.org = org;
   req.membership = membership;
   req.session = session || undefined;
-  req.token = token || undefined;
-
-  next();
+  req.token = token;
+  return next();
 }
 
 // Apply context resolution to all protected API routes
