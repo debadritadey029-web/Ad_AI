@@ -235,7 +235,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return;
       }
       await refreshContext();
-      showToast('EMERGENCY STOP TRIGGERED: All outbound provider writes halted.', 'error');
+      showToast('Emergency stop enabled in this workspace. Live provider pausing is not configured.', 'error');
     } catch {
       showToast('Network error triggering emergency stop', 'error');
     }
