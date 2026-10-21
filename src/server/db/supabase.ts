@@ -200,6 +200,15 @@ export async function resolveSupabaseProvisionedIdentity(
         .maybeSingle();
       if (organizationError || !organization?.id) continue;
 
+      // The normalized controls table is authoritative when the finance migration
+      // is installed. If it is not yet installed, retain the legacy organization
+      // fields for authentication/context only; protected finance writes still fail closed.
+      const { data: controls } = await client
+        .from('app_org_controls')
+        .select('emergency_stop_active,emergency_stop_reason,emergency_stop_triggered_at,emergency_stop_triggered_by,policy')
+        .eq('org_id', membership.org_id)
+        .maybeSingle();
+
       return {
         authUserId: authUser.id,
         email: normalizedEmail,
@@ -217,11 +226,11 @@ export async function resolveSupabaseProvisionedIdentity(
           slug: String(organization.slug),
           tier: String(organization.tier || 'STARTER'),
           defaultCurrency: String(organization.default_currency || 'USD'),
-          emergencyStopActive: Boolean(organization.emergency_stop_active),
-          emergencyStopReason: organization.emergency_stop_reason ? String(organization.emergency_stop_reason) : undefined,
-          emergencyStopTriggeredAt: organization.emergency_stop_triggered_at ? String(organization.emergency_stop_triggered_at) : undefined,
-          emergencyStopTriggeredBy: organization.emergency_stop_triggered_by ? String(organization.emergency_stop_triggered_by) : undefined,
-          settings: (organization.settings || {}) as Record<string, unknown>,
+          emergencyStopActive: Boolean(controls?.emergency_stop_active ?? organization.emergency_stop_active),
+          emergencyStopReason: (controls?.emergency_stop_reason ?? organization.emergency_stop_reason) ? String(controls?.emergency_stop_reason ?? organization.emergency_stop_reason) : undefined,
+          emergencyStopTriggeredAt: (controls?.emergency_stop_triggered_at ?? organization.emergency_stop_triggered_at) ? String(controls?.emergency_stop_triggered_at ?? organization.emergency_stop_triggered_at) : undefined,
+          emergencyStopTriggeredBy: (controls?.emergency_stop_triggered_by ?? organization.emergency_stop_triggered_by) ? String(controls?.emergency_stop_triggered_by ?? organization.emergency_stop_triggered_by) : undefined,
+          settings: (controls?.policy || organization.settings || {}) as Record<string, unknown>,
           createdAt: String(organization.created_at || new Date().toISOString()),
         },
         membership: {
