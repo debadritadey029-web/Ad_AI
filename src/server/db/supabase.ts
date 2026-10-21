@@ -122,3 +122,71 @@ export async function saveSupabaseSnapshot(snapshot: SerializedDataStore): Promi
 
   return true;
 }
+
+
+export interface SupabaseProvisionedIdentity {
+  authUserId: string;
+  email: string;
+  appUserId: string;
+  organizationId: string;
+  role: string;
+}
+
+/**
+ * Verifies a Supabase access token with Auth and checks that the email is
+ * explicitly provisioned in the legacy application users/memberships tables.
+ * The local store must also contain the same user/org/membership before routes
+ * can run; this avoids silently creating a tenant or granting demo access.
+ */
+export async function resolveSupabaseProvisionedIdentity(
+  accessToken: string,
+  requestedOrganizationId?: string
+): Promise<SupabaseProvisionedIdentity | null> {
+  const client = getOrCreateServerClient();
+  if (!client || !accessToken) return null;
+
+  try {
+    const { data: authData, error: authError } = await client.auth.getUser(accessToken);
+    const authUser = authData?.user;
+    if (authError || !authUser?.id || !authUser.email || !authUser.email_confirmed_at) return null;
+
+    const normalizedEmail = authUser.email.trim().toLowerCase();
+    const { data: appUser, error: userError } = await client
+      .from('users')
+      .select('id,email')
+      .eq('email', normalizedEmail)
+      .maybeSingle();
+    if (userError || !appUser?.id) return null;
+
+    let membershipQuery = client
+      .from('memberships')
+      .select('id,user_id,org_id,role,status')
+      .eq('user_id', appUser.id)
+      .eq('status', 'ACTIVE');
+    if (requestedOrganizationId) membershipQuery = membershipQuery.eq('org_id', requestedOrganizationId);
+
+    const { data: memberships, error: membershipError } = await membershipQuery.limit(50);
+    if (membershipError || !memberships?.length) return null;
+
+    for (const membership of memberships) {
+      const { data: organization, error: organizationError } = await client
+        .from('organizations')
+        .select('id')
+        .eq('id', membership.org_id)
+        .maybeSingle();
+      if (!organizationError && organization?.id) {
+        return {
+          authUserId: authUser.id,
+          email: normalizedEmail,
+          appUserId: String(appUser.id),
+          organizationId: String(membership.org_id),
+          role: String(membership.role),
+        };
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('[Supabase Auth] Access-token validation failed:', error);
+    return null;
+  }
+}
