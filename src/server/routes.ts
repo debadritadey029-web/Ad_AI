@@ -156,7 +156,7 @@ apiRouter.use(resolveContext);
  * Step 1: Initiates OTP code transmission to Email or Phone number
  */
 apiRouter.post('/auth/otp/send', authLimiter, (req: Request, res: Response) => {
-  const { target, channel = 'email', purpose = 'OTP_LOGIN' } = req.body;
+  const { target, channel = 'email' } = req.body;
   if (!target || typeof target !== 'string' || !target.trim()) {
     return res.status(400).json({ error: 'TARGET_REQUIRED', message: 'Email or phone number is required.' });
   }
@@ -186,7 +186,7 @@ apiRouter.post('/auth/otp/send', authLimiter, (req: Request, res: Response) => {
   const result = sendOtp({
     target,
     channel: effectiveChannel,
-    purpose: purpose as any,
+    purpose: 'OTP_LOGIN',
   });
 
   res.json({
@@ -218,6 +218,7 @@ apiRouter.post('/auth/otp/verify', authLimiter, (req: Request, res: Response) =>
     target,
     code,
     channel: effectiveChannel,
+    purpose: 'OTP_LOGIN',
   });
 
   if (!verification.success) {
@@ -556,7 +557,10 @@ apiRouter.post('/auth/demo-login', (req: Request, res: Response) => {
   res.json({
     success: true,
     token: session.token,
-    user: globalStore.users.get(userId),
+    user: (() => {
+      const selectedUser = globalStore.users.get(userId)!;
+      return { id: selectedUser.id, name: selectedUser.name, email: selectedUser.email, phone: selectedUser.phone, avatarUrl: selectedUser.avatarUrl };
+    })(),
     org: globalStore.organizations.get(targetOrgId),
     membership,
   });
