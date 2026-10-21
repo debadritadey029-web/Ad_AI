@@ -102,13 +102,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
-    return isSupabaseConfigured ? null : localStorage.getItem('advantage_session_token');
+    return isSupabaseConfigured() ? null : localStorage.getItem('advantage_session_token');
   });
 
   const authFetch = useCallback(
     async (url: string, init: RequestInit = {}): Promise<Response> => {
       const headers = new Headers(init.headers || {});
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured()) {
         const { data } = await getSupabaseBrowserClient().auth.getSession();
         const accessToken = data.session?.access_token;
         if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
@@ -133,7 +133,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const refreshContext = useCallback(async () => {
     try {
       const headers: Record<string, string> = {};
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured()) {
         const { data } = await getSupabaseBrowserClient().auth.getSession();
         if (data.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
       } else if (sessionToken) {
@@ -157,7 +157,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setAvailableUsers([]);
         setAvailableOrgs([]);
         setShowAuthModal(true);
-        if (isSupabaseConfigured) {
+        if (isSupabaseConfigured()) {
           await getSupabaseBrowserClient().auth.signOut();
         } else {
           localStorage.removeItem('advantage_session_token');
@@ -297,7 +297,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const sendOtpRequest = async (target: string, channel: 'email' | 'phone') => {
     try {
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured()) {
         if (channel !== 'email') {
           const message = 'SMS sign-in is not enabled yet. Please use email OTP.';
           showToast(message, 'error');
@@ -335,7 +335,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const loginWithOtp = async (target: string, code: string, channel?: 'email' | 'phone') => {
     setIsLoading(true);
     try {
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured()) {
         if (channel === 'phone') {
           showToast('SMS sign-in is not enabled yet. Please use email OTP.', 'error');
           return false;
@@ -489,7 +489,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const logout = async () => {
     try {
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured()) {
         await getSupabaseBrowserClient().auth.signOut();
       } else {
         await authFetch('/api/auth/logout', { method: 'POST' });
