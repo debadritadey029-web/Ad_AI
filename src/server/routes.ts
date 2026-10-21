@@ -37,6 +37,7 @@ import {
 } from './services/auth.js';
 import { getSupabaseServerStatus, testSupabaseConnection } from './db/supabase.js';
 import { createRateLimiter } from './middleware/security.js';
+import { isDemoAuthEnabled, isProduction, shouldExposeDevOtpCode } from './services/security-mode.js';
 import {
   Campaign,
   BudgetProposal,
@@ -46,6 +47,8 @@ import {
   Organization,
   Membership,
   Session,
+  ProviderType,
+  CampaignStatus,
 } from './db/types.js';
 
 export const apiRouter = Router();
@@ -63,13 +66,9 @@ export interface ContextRequest extends Request {
   token?: string;
 }
 
-// Fallback user & org for unauthenticated browser sessions
-let fallbackUserId = 'usr_sarah';
-let fallbackOrgId = 'org_apex';
-
 /**
  * Middleware that resolves the authenticated user, session, and tenant organization.
- * Honors Bearer token, session token header, or falls back to verified active tester session.
+ * Requires a valid session token for every non-public route.
  */
 function resolveContext(req: ContextRequest, res: Response, next: NextFunction) {
   // Allow public authentication, OTP, and status endpoints to pass through without requiring active session
@@ -77,7 +76,6 @@ function resolveContext(req: ContextRequest, res: Response, next: NextFunction) 
     '/health',
     '/health/ready',
     '/supabase/status',
-    '/supabase/test',
     '/auth/login',
     '/auth/login-step1',
     '/auth/login-step2',
@@ -92,18 +90,23 @@ function resolveContext(req: ContextRequest, res: Response, next: NextFunction) 
   const token = extractAuthToken(req);
   let session: Session | null = null;
 
-  if (token) {
-    session = validateSessionToken(token);
-    if (!session) {
-      return res.status(401).json({
-        error: 'INVALID_SESSION',
-        message: 'Provided session token is invalid or expired. Please re-authenticate.',
-      });
-    }
+  if (!token) {
+    return res.status(401).json({
+      error: 'UNAUTHENTICATED',
+      message: 'Authentication required. Please sign in to continue.',
+    });
   }
 
-  // Determine user
-  const userId = session ? session.userId : fallbackUserId;
+  session = validateSessionToken(token);
+  if (!session) {
+    return res.status(401).json({
+      error: 'INVALID_SESSION',
+      message: 'Provided session token is invalid or expired. Please re-authenticate.',
+    });
+  }
+
+  // Determine user only from the verified session.
+  const userId = session.userId;
   const user = globalStore.users.get(userId);
   if (!user) {
     return res.status(401).json({ error: 'USER_NOT_FOUND', message: 'User does not exist.' });
@@ -111,8 +114,7 @@ function resolveContext(req: ContextRequest, res: Response, next: NextFunction) 
 
   // Determine requested org: header override, or session active org, or fallback
   const requestedOrgId =
-    (req.headers['x-organization-id'] as string) ||
-    (session ? session.activeOrgId : fallbackOrgId);
+    (req.headers['x-organization-id'] as string) || session.activeOrgId;
 
   const org = globalStore.organizations.get(requestedOrgId);
   if (!org) {
@@ -154,7 +156,7 @@ apiRouter.use(resolveContext);
  * Step 1: Initiates OTP code transmission to Email or Phone number
  */
 apiRouter.post('/auth/otp/send', authLimiter, (req: Request, res: Response) => {
-  const { target, channel = 'email', purpose = 'OTP_LOGIN' } = req.body;
+  const { target, channel = 'email' } = req.body;
   if (!target || typeof target !== 'string' || !target.trim()) {
     return res.status(400).json({ error: 'TARGET_REQUIRED', message: 'Email or phone number is required.' });
   }
@@ -173,10 +175,19 @@ apiRouter.post('/auth/otp/send', authLimiter, (req: Request, res: Response) => {
     }
   }
 
+  // No email/SMS adapter exists yet. Only allow the explicit development-code path in
+  // isolated non-production environments; otherwise do not claim delivery succeeded.
+  if (isProduction() || !shouldExposeDevOtpCode()) {
+    return res.status(503).json({
+      error: 'OTP_DELIVERY_NOT_CONFIGURED',
+      message: 'Secure email/SMS delivery is not configured. OTP sign-in is unavailable unless development OTP codes are explicitly enabled in isolated staging.',
+    });
+  }
+
   const result = sendOtp({
     target,
     channel: effectiveChannel,
-    purpose: purpose as any,
+    purpose: 'OTP_LOGIN',
   });
 
   res.json({
@@ -185,7 +196,7 @@ apiRouter.post('/auth/otp/send', authLimiter, (req: Request, res: Response) => {
     channel: result.channel,
     targetMasked: result.targetMasked,
     expiresInSeconds: result.expiresInSeconds,
-    devCode: result.devCode,
+    ...(shouldExposeDevOtpCode() && result.devCode ? { devCode: result.devCode } : {}),
   });
 });
 
@@ -197,6 +208,9 @@ apiRouter.post('/auth/otp/verify', authLimiter, (req: Request, res: Response) =>
   if (!target || !code) {
     return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Target (email/phone) and 6-digit code are required.' });
   }
+  if (isProduction()) {
+    return res.status(503).json({ error: 'OTP_DELIVERY_NOT_CONFIGURED', message: 'OTP verification is unavailable until secure email/SMS delivery is configured.' });
+  }
 
   const effectiveChannel: 'email' | 'phone' =
     channel === 'phone' || (!target.includes('@') && /[\d+]/.test(target)) ? 'phone' : 'email';
@@ -205,6 +219,7 @@ apiRouter.post('/auth/otp/verify', authLimiter, (req: Request, res: Response) =>
     target,
     code,
     channel: effectiveChannel,
+    purpose: 'OTP_LOGIN',
   });
 
   if (!verification.success) {
@@ -226,44 +241,20 @@ apiRouter.post('/auth/otp/verify', authLimiter, (req: Request, res: Response) =>
   });
 
   if (!user) {
-    // Auto-provision verified user
-    const newUserId = `usr_${Date.now()}`;
-    const userName =
-      name && typeof name === 'string' && name.trim()
-        ? name.trim()
-        : effectiveChannel === 'email'
-        ? normalizedTarget.split('@')[0]
-        : 'Mobile User';
-    user = {
-      id: newUserId,
-      email: effectiveChannel === 'email' ? normalizedTarget : `${newUserId}@advantage.mobile`,
-      phone: effectiveChannel === 'phone' ? normalizedTarget : undefined,
-      name: userName,
-      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-      twoFactorEnabled: true,
-      twoFactorMethod: effectiveChannel,
-      createdAt: new Date().toISOString(),
-    };
-    globalStore.users.set(newUserId, user);
-
-    // Grant membership in Apex Global Commerce
-    const memId = `mem_${newUserId}_apex`;
-    const membership: Membership = {
-      id: memId,
-      userId: newUserId,
-      orgId: 'org_apex',
-      role: 'CAMPAIGN_MANAGER',
-      status: 'ACTIVE',
-      joinedAt: new Date().toISOString(),
-    };
-    globalStore.memberships.set(memId, membership);
+    return res.status(403).json({
+      error: 'ACCOUNT_NOT_PROVISIONED',
+      message: 'This destination is not registered. Ask your organization administrator for an invitation.',
+    });
   }
 
   // Find active org
   const membership = Array.from(globalStore.memberships.values()).find(
     (m) => m.userId === user!.id && m.status === 'ACTIVE'
   );
-  const orgId = membership ? membership.orgId : 'org_apex';
+  if (!membership) {
+    return res.status(403).json({ error: 'ORGANIZATION_MEMBERSHIP_REQUIRED', message: 'No active organization membership is assigned to this account.' });
+  }
+  const orgId = membership.orgId;
 
   const session = createSession({
     userId: user.id,
@@ -301,6 +292,9 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
+  if (isProduction()) {
+    return res.status(503).json({ error: 'SECURE_LOGIN_NOT_CONFIGURED', message: 'Production sign-in is unavailable until secure two-factor delivery is configured.' });
+  }
 
   const user = Array.from(globalStore.users.values()).find(
     (u) => u.email.toLowerCase() === String(email).toLowerCase()
@@ -317,6 +311,13 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
 
   // Check if 2FA is enabled (true for all enterprise users by default)
   if (user.twoFactorEnabled !== false) {
+    // No delivery adapter exists yet. Only allow explicitly enabled staging OTP codes.
+    if (isProduction() || !shouldExposeDevOtpCode()) {
+      return res.status(503).json({
+        error: 'OTP_DELIVERY_NOT_CONFIGURED',
+        message: 'Secure email/SMS delivery is not configured. Two-factor sign-in is unavailable unless development OTP codes are explicitly enabled in isolated staging.',
+      });
+    }
     const channel: 'email' | 'phone' =
       user.twoFactorMethod === 'phone' && user.phone ? 'phone' : 'email';
     const target = channel === 'phone' && user.phone ? user.phone : user.email;
@@ -332,7 +333,7 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
       challengeToken: challenge.challengeToken,
       targetMasked: challenge.targetMasked,
       channel,
-      devCode: challenge.devCode,
+      ...(shouldExposeDevOtpCode() && challenge.devCode ? { devCode: challenge.devCode } : {}),
       message: `Credentials verified. Two-step verification code sent to ${challenge.targetMasked}.`,
     });
   }
@@ -341,7 +342,10 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
   const membership = Array.from(globalStore.memberships.values()).find(
     (m) => m.userId === user.id && m.status === 'ACTIVE'
   );
-  const orgId = membership ? membership.orgId : 'org_apex';
+  if (!membership) {
+    return res.status(403).json({ error: 'ORGANIZATION_MEMBERSHIP_REQUIRED', message: 'No active organization membership is assigned to this account.' });
+  }
+  const orgId = membership.orgId;
 
   const session = createSession({
     userId: user.id,
@@ -374,6 +378,9 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
  */
 apiRouter.post('/auth/login-step2', authLimiter, (req: Request, res: Response) => {
   const { challengeToken, code } = req.body;
+  if (isProduction()) {
+    return res.status(503).json({ error: 'SECURE_LOGIN_NOT_CONFIGURED', message: 'Production sign-in is unavailable until secure two-factor delivery is configured.' });
+  }
   if (!challengeToken || !code) {
     return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Challenge token and 6-digit OTP code are required.' });
   }
@@ -392,7 +399,10 @@ apiRouter.post('/auth/login-step2', authLimiter, (req: Request, res: Response) =
   const membership = Array.from(globalStore.memberships.values()).find(
     (m) => m.userId === result.user!.id && m.status === 'ACTIVE'
   );
-  const orgId = membership ? membership.orgId : 'org_apex';
+  if (!membership) {
+    return res.status(403).json({ error: 'ORGANIZATION_MEMBERSHIP_REQUIRED', message: 'No active organization membership is assigned to this account.' });
+  }
+  const orgId = membership.orgId;
 
   persistCurrentStore();
 
@@ -463,6 +473,9 @@ apiRouter.post('/auth/login', authLimiter, (req: Request, res: Response) => {
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
+  if (isProduction()) {
+    return res.status(503).json({ error: 'SECURE_LOGIN_NOT_CONFIGURED', message: 'Production sign-in is unavailable until secure two-factor delivery is configured.' });
+  }
 
   const user = Array.from(globalStore.users.values()).find(
     (u) => u.email.toLowerCase() === String(email).toLowerCase()
@@ -477,11 +490,23 @@ apiRouter.post('/auth/login', authLimiter, (req: Request, res: Response) => {
     return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
   }
 
+  // This legacy endpoint skips the 2FA challenge, so it is restricted to accounts
+  // that explicitly have 2FA disabled and is never used in production.
+  if (user.twoFactorEnabled !== false) {
+    return res.status(403).json({
+      error: 'TWO_FACTOR_REQUIRED',
+      message: 'This account requires two-factor verification. Use the two-step sign-in flow.',
+    });
+  }
+
   // Find first active organization
   const membership = Array.from(globalStore.memberships.values()).find(
     (m) => m.userId === user.id && m.status === 'ACTIVE'
   );
-  const orgId = membership ? membership.orgId : 'org_apex';
+  if (!membership) {
+    return res.status(403).json({ error: 'ORGANIZATION_MEMBERSHIP_REQUIRED', message: 'No active organization membership is assigned to this account.' });
+  }
+  const orgId = membership.orgId;
 
   const session = createSession({
     userId: user.id,
@@ -501,6 +526,9 @@ apiRouter.post('/auth/login', authLimiter, (req: Request, res: Response) => {
 });
 
 apiRouter.post('/auth/demo-login', (req: Request, res: Response) => {
+  if (!isDemoAuthEnabled()) {
+    return res.status(404).json({ error: 'NOT_FOUND', message: 'Demo sign-in is disabled.' });
+  }
   const { userId, orgId } = req.body;
   if (!userId || !globalStore.users.has(userId)) {
     return res.status(400).json({ error: 'Invalid userId.' });
@@ -518,10 +546,6 @@ apiRouter.post('/auth/demo-login', (req: Request, res: Response) => {
     });
   }
 
-  // Update fallbacks for browser state
-  fallbackUserId = userId;
-  fallbackOrgId = targetOrgId;
-
   const session = createSession({
     userId,
     activeOrgId: targetOrgId,
@@ -534,7 +558,10 @@ apiRouter.post('/auth/demo-login', (req: Request, res: Response) => {
   res.json({
     success: true,
     token: session.token,
-    user: globalStore.users.get(userId),
+    user: (() => {
+      const selectedUser = globalStore.users.get(userId)!;
+      return { id: selectedUser.id, name: selectedUser.name, email: selectedUser.email, phone: selectedUser.phone, avatarUrl: selectedUser.avatarUrl };
+    })(),
     org: globalStore.organizations.get(targetOrgId),
     membership,
   });
@@ -553,13 +580,16 @@ apiRouter.get('/auth/context', (req: ContextRequest, res: Response) => {
   const org = req.org!;
   const membership = req.membership!;
 
-  const allUsers = Array.from(globalStore.users.values()).map((u) => ({
-    id: u.id,
-    name: u.name,
-    email: u.email,
-    avatarUrl: u.avatarUrl,
-  }));
-  const allOrgs = Array.from(globalStore.organizations.values());
+  // Return only the signed-in user's own profile and organizations they are authorized to access.
+  const allUsers = isDemoAuthEnabled()
+    ? Array.from(globalStore.users.values()).map((u) => ({
+        id: u.id, name: u.name, email: u.email, avatarUrl: u.avatarUrl,
+      }))
+    : [{ id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl }];
+  const allOrgs = Array.from(globalStore.memberships.values())
+    .filter((m) => m.userId === user.id && m.status === 'ACTIVE')
+    .map((m) => globalStore.organizations.get(m.orgId))
+    .filter((o): o is Organization => Boolean(o));
   const userMemberships = Array.from(globalStore.memberships.values()).filter(
     (m) => m.userId === user.id
   );
@@ -572,48 +602,42 @@ apiRouter.get('/auth/context', (req: ContextRequest, res: Response) => {
     availableUsers: allUsers,
     availableOrgs: allOrgs,
     userMemberships,
-    sessionToken: req.token || req.session?.token || 'test_token_sarah_apex',
   });
 });
 
 apiRouter.post('/auth/switch-context', (req: ContextRequest, res: Response) => {
   const { userId, orgId } = req.body;
+  const user = req.user!;
+  const session = req.session!;
 
-  if (userId && globalStore.users.has(userId)) {
-    fallbackUserId = userId;
+  // User impersonation is available only in explicitly enabled local/demo mode.
+  if (userId && userId !== user.id && !isDemoAuthEnabled()) {
+    return res.status(403).json({ error: 'DEMO_SWITCH_DISABLED', message: 'Switching user identities is disabled.' });
   }
-  if (orgId && globalStore.organizations.has(orgId)) {
-    // Check if current user is member of target org
-    const targetUserId = userId || req.user!.id;
-    const isMember = Array.from(globalStore.memberships.values()).some(
-      (m) => m.userId === targetUserId && m.orgId === orgId && m.status === 'ACTIVE'
-    );
-    if (!isMember) {
-      return res.status(403).json({
-        error: 'TENANT_ACCESS_DENIED',
-        message: 'User does not belong to the requested organization.',
-      });
-    }
-    fallbackOrgId = orgId;
-    if (req.session) {
-      req.session.activeOrgId = orgId;
-    }
+  if (userId && userId !== user.id) {
+    return res.status(403).json({ error: 'DEMO_SWITCH_UNSUPPORTED', message: 'Sign in as the intended demo user instead.' });
+  }
+  if (typeof orgId !== 'string' || !orgId.trim()) {
+    return res.status(400).json({ error: 'ORGANIZATION_REQUIRED', message: 'An organization ID is required.' });
   }
 
-  persistCurrentStore();
-
-  const user = globalStore.users.get(fallbackUserId)!;
-  const org = globalStore.organizations.get(fallbackOrgId)!;
+  const org = globalStore.organizations.get(orgId);
+  if (!org) return res.status(404).json({ error: 'ORGANIZATION_NOT_FOUND', message: 'Organization not found.' });
   const membership = Array.from(globalStore.memberships.values()).find(
-    (m) => m.userId === fallbackUserId && m.orgId === fallbackOrgId && m.status === 'ACTIVE'
+    (m) => m.userId === user.id && m.orgId === org.id && m.status === 'ACTIVE'
   );
+  if (!membership) {
+    return res.status(403).json({ error: 'TENANT_ACCESS_DENIED', message: 'You do not have active membership in that organization.' });
+  }
 
+  session.activeOrgId = org.id;
+  persistCurrentStore();
   res.json({
     success: true,
     user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl },
     currentOrg: org,
     membership,
-    permissions: membership ? ROLE_PERMISSIONS[membership.role] : [],
+    permissions: ROLE_PERMISSIONS[membership.role] || [],
   });
 });
 
@@ -722,6 +746,9 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'Campaign name is required.' });
   }
+  if (typeof provider !== 'string' || !Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, provider)) {
+    return res.status(400).json({ error: 'INVALID_PROVIDER', message: 'Select a supported advertising provider.' });
+  }
 
   if (!budgetAmount || isNaN(Number(budgetAmount)) || Number(budgetAmount) <= 0) {
     return res.status(400).json({ error: 'Valid positive budget amount is required.' });
@@ -731,7 +758,7 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
   const budgetMinorUnits = toMinorUnits(Number(budgetAmount), campCurrency);
 
   // Validate provider minimum budget
-  const minValidation = validateCampaignMinBudget(provider, budgetMinorUnits, campCurrency);
+  const minValidation = validateCampaignMinBudget(provider as ProviderType, budgetMinorUnits, campCurrency);
   if (!minValidation.valid) {
     return res.status(400).json({ error: minValidation.error });
   }
@@ -747,11 +774,12 @@ apiRouter.post('/campaigns', (req: ContextRequest, res: Response) => {
   const newCampaign: Campaign = {
     id,
     orgId: org.id,
-    provider,
-    providerAccountId: providerAccountId || 'act_default',
+    provider: provider as ProviderType,
+    providerAccountId: providerAccountId || 'unlinked',
     name: name.trim(),
     objective: objective || 'CONVERSIONS',
-    status: 'ACTIVE',
+    // Creating a local record does not publish it to an advertising platform.
+    status: 'DRAFT',
     budgetType: budgetType || 'DAILY',
     budgetMinorUnits,
     currency: campCurrency,
@@ -806,6 +834,13 @@ apiRouter.patch('/campaigns/:id/status', (req: ContextRequest, res: Response) =>
   if (!hasPermission(membership.role, 'EDIT_CAMPAIGNS')) {
     return res.status(403).json({ error: 'Permission denied: Requires EDIT_CAMPAIGNS permission.' });
   }
+  const validStatuses = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'ACTIVE', 'PAUSED', 'COMPLETED', 'REJECTED'];
+  if (typeof status !== 'string' || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'INVALID_CAMPAIGN_STATUS', message: 'Status must be a supported campaign status.' });
+  }
+  if (status === 'ACTIVE') {
+    return res.status(501).json({ error: 'PROVIDER_WRITE_NOT_IMPLEMENTED', message: 'Campaign activation is unavailable because live provider publishing is not implemented. The campaign remains unchanged.' });
+  }
 
   const campaign = globalStore.campaigns.get(id);
   if (!campaign || campaign.orgId !== org.id) {
@@ -819,7 +854,7 @@ apiRouter.patch('/campaigns/:id/status', (req: ContextRequest, res: Response) =>
   }
 
   const oldStatus = campaign.status;
-  campaign.status = status;
+  campaign.status = status as CampaignStatus;
   campaign.version += 1;
   campaign.updatedAt = new Date().toISOString();
 
@@ -979,11 +1014,17 @@ apiRouter.post('/finance/proposals/:id/review', (req: ContextRequest, res: Respo
     });
   }
 
+  if (action !== 'APPROVE' && action !== 'REJECT') {
+    return res.status(400).json({ error: 'INVALID_REVIEW_ACTION', message: 'Action must be APPROVE or REJECT.' });
+  }
+
   if (action === 'APPROVE') {
-    proposal.status = 'EXECUTED';
+    // This application has no live provider budget-write adapter. Approval is recorded
+    // as APPROVED (not EXECUTED) and only updates the internal draft configuration.
+    proposal.status = 'APPROVED';
     proposal.reviewedByUserId = user.id;
     proposal.reviewedAt = new Date().toISOString();
-    proposal.reviewNotes = notes || 'Approved and executed under financial authority.';
+    proposal.reviewNotes = notes || 'Approved in the local workspace only; no provider-side budget update was executed.';
 
     // Execute change on campaign
     campaign.budgetMinorUnits = proposal.proposedBudgetMinorUnits;
@@ -996,7 +1037,7 @@ apiRouter.post('/finance/proposals/:id/review', (req: ContextRequest, res: Respo
       actorUserId: user.id,
       actorEmail: user.email,
       actorRole: membership.role,
-      action: 'BUDGET_PROPOSAL_APPROVED_AND_EXECUTED',
+      action: 'BUDGET_PROPOSAL_APPROVED_LOCAL_ONLY',
       entityType: 'PROPOSAL',
       entityId: id,
       prevHash: prevLog?.hash,
@@ -1042,6 +1083,9 @@ apiRouter.post('/finance/emergency-stop', (req: ContextRequest, res: Response) =
   const user = req.user!;
   const membership = req.membership!;
 
+  if (action !== 'TRIGGER' && action !== 'RELEASE') {
+    return res.status(400).json({ error: 'INVALID_EMERGENCY_STOP_ACTION', message: 'Action must be TRIGGER or RELEASE.' });
+  }
   const reqPerm = action === 'TRIGGER' ? 'TRIGGER_EMERGENCY_STOP' : 'RELEASE_EMERGENCY_STOP';
   if (!hasPermission(membership.role, reqPerm)) {
     return res.status(403).json({ error: `Permission denied: Requires ${reqPerm}.` });
@@ -1080,7 +1124,7 @@ apiRouter.post('/finance/emergency-stop', (req: ContextRequest, res: Response) =
 
     res.json({
       success: true,
-      message: 'EMERGENCY STOP ACTIVATED: All provider write actions halted and active campaigns paused.',
+      message: 'Emergency stop is active in the local workspace. Campaign records were marked paused locally; no live provider pause API is configured.',
       org,
     });
   } else {
@@ -1128,17 +1172,25 @@ apiRouter.get('/providers', (req: ContextRequest, res: Response) => {
 apiRouter.post('/providers/:id/sync', (req: ContextRequest, res: Response) => {
   const { id } = req.params;
   const org = req.org!;
+  const membership = req.membership!;
+  if (!hasPermission(membership.role, 'CONNECT_PROVIDERS')) {
+    return res.status(403).json({ error: 'Permission denied: Requires CONNECT_PROVIDERS permission.' });
+  }
   const conn = globalStore.providerConnections.get(id);
 
   if (!conn || conn.orgId !== org.id) {
     return res.status(404).json({ error: 'Connection not found in active organization.' });
   }
 
-  conn.syncStatus = 'HEALTHY';
-  conn.lastSyncAt = new Date().toISOString();
+  // Never report a healthy sync without making a real provider API request.
+  conn.syncStatus = 'ERROR';
+  conn.errorMessage = 'Live provider synchronization is not implemented for this connection.';
   persistCurrentStore();
-
-  res.json({ success: true, connection: conn });
+  res.status(501).json({
+    error: 'PROVIDER_SYNC_NOT_IMPLEMENTED',
+    message: 'This connector is catalog-only. No live provider API request was made.',
+    connection: conn,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1309,13 +1361,21 @@ apiRouter.patch('/leads/:id/status', (req: ContextRequest, res: Response) => {
   const { id } = req.params;
   const { status } = req.body;
   const org = req.org!;
+  const membership = req.membership!;
+  if (!hasPermission(membership.role, 'MANAGE_LEADS')) {
+    return res.status(403).json({ error: 'Permission denied: Requires MANAGE_LEADS permission.' });
+  }
   const lead = globalStore.leads.get(id);
 
   if (!lead || lead.orgId !== org.id) {
     return res.status(404).json({ error: 'Lead not found in active organization.' });
   }
 
-  lead.status = status;
+  const validStatuses = ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'DISQUALIFIED'];
+  if (typeof status !== 'string' || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'INVALID_LEAD_STATUS', message: 'Status must be NEW, CONTACTED, QUALIFIED, CONVERTED, or DISQUALIFIED.' });
+  }
+  lead.status = status as LeadRecord['status'];
   persistCurrentStore();
   res.json(lead);
 });
