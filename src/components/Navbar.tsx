@@ -130,7 +130,7 @@ export const Navbar: React.FC = () => {
             </div>
 
             {/* Actor Switcher (RBAC Tester) */}
-            <div className="flex items-center gap-1.5 bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs">
+            <div className="hidden lg:flex items-center gap-1.5 bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs max-w-full">
               <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
               <div className="flex flex-col text-left">
                 <select
