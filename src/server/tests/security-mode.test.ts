@@ -4,6 +4,7 @@ import { isProduction, isDemoAuthEnabled, shouldExposeDevOtpCode } from '../serv
 
 test('Security mode: production always disables demo authentication', () => {
   assert.equal(isProduction('production'), true);
+  assert.equal(isProduction('development', 'production', undefined), true);
   assert.equal(isDemoAuthEnabled('production', 'true'), false);
 });
 
