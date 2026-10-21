@@ -59,6 +59,13 @@ test('Vercel blocks writes for domains not yet backed by durable repositories af
     assert.equal(authenticated.status, 503);
     const body = await authenticated.json() as { error?: string };
     assert.equal(body.error, 'DURABLE_PERSISTENCE_NOT_IMPLEMENTED');
+
+    const nonDurableRead = await fetch(`http://127.0.0.1:${address.port}/api/finance/proposals`, {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    assert.equal(nonDurableRead.status, 503);
+    const readBody = await nonDurableRead.json() as { error?: string };
+    assert.equal(readBody.error, 'DURABLE_PERSISTENCE_NOT_IMPLEMENTED');
   } finally {
     revokeSession(session.token);
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
