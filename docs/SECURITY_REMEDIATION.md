@@ -27,6 +27,19 @@ This document records the scope of the critical-security remediation branch. It 
 - `/api/health/ready` deliberately returns HTTP 503 until durable transactional tenant-scoped persistence is implemented. This is an intentional release gate, not a failed Supabase login.
 - CI now runs on pushes to this branch and a separate CodeQL workflow performs scheduled and pull-request JavaScript/TypeScript analysis. Wait for the new checks to finish before treating the latest commit as validated.
 
+## Phase 2: transactional campaign persistence
+
+- Added `supabase/migrations/20261022_normalized_campaign_persistence.sql`, which creates normalized `app_campaigns` and append-only `app_audit_events` tables, tenant indexes, server-only privileges, and service-role-only transactional RPCs.
+- Campaign list/create/status operations use the normalized repository whenever Supabase server credentials are configured. Database errors fail closed; they never fall back to the process-local map.
+- Campaign status updates use optimistic version checks; concurrent stale writes return a conflict instead of overwriting newer state.
+- Campaign creation and status changes append hash-chained audit events inside the same database transaction as the campaign mutation.
+- On Vercel, whole-state snapshot writes are disabled. Mutations for other domains that do not yet have durable transactional repositories return HTTP 503 after authentication; they do not claim success based on an ephemeral in-memory write.
+- New database contract tests check tenant scoping, optimistic concurrency, audit chaining, and the serverless write gate.
+
+### Phase 2 scope limitation
+
+Only campaign list/create/status is moved to normalized durable persistence in this phase. Organization settings, finance proposals/approvals, provider connections, creatives, leads, and a fully durable audit read API still need dedicated repositories and transactional workflows. The readiness endpoint must remain closed until those domains and real browser E2E coverage are complete.
+
 ## Explicit release blockers still open
 
 1. **Production authentication delivery:** configure and implement an email/SMS OTP provider (including delivery errors, retry handling, verification limits, and operational monitoring) before production login can be enabled.
