@@ -51,9 +51,9 @@ const AppContent: React.FC = () => {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
       <Navbar />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="relative flex-1 flex min-h-0 min-w-0 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+        <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
           {renderActiveView()}
         </main>
       </div>
