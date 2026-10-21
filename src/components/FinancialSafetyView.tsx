@@ -87,7 +87,7 @@ export const FinancialSafetyView: React.FC = () => {
 
       showToast(
         action === 'APPROVE'
-          ? 'Budget Proposal APPROVED and successfully executed on live campaign!'
+          ? 'Budget proposal approved. The internal draft budget was updated; no live provider write was performed.'
           : 'Budget Proposal REJECTED.',
         action === 'APPROVE' ? 'success' : 'info'
       );
@@ -188,8 +188,8 @@ export const FinancialSafetyView: React.FC = () => {
               </div>
               <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
                 {isEmergency
-                  ? `All outbound provider writes, campaign creations, and budget executions are halted. Reason: "${currentOrg?.emergencyStopReason}".`
-                  : 'Centrally enforced across Meta Ads, Google Ads, TikTok Ads, and LinkedIn Ads. Triggering halts all queued jobs and API write updates instantly.'}
+                  ? `Financial proposal workflows are blocked. Provider-side campaigns are not paused by this screen. Reason: "${currentOrg?.emergencyStopReason}".`
+                  : 'Blocks AdVantage AI financial proposal workflows and pauses internal campaign records. Provider-side campaigns are not paused unless a verified provider integration is configured.'}
               </p>
             </div>
           </div>
@@ -338,7 +338,7 @@ export const FinancialSafetyView: React.FC = () => {
                           }
                           className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg transition shadow-md disabled:opacity-40"
                         >
-                          Approve & Execute
+                          Approve Draft Budget
                         </button>
                       </div>
                     )}
