@@ -16,7 +16,7 @@ test('database migration uses tenant-scoped normalized campaign records and atom
   assert.match(migration, /unique \(org_id, id\)/i);
   assert.match(migration, /p_expected_version integer/i);
   assert.match(migration, /campaign_version_conflict/i);
-  assert.match(migration, /revoke all on table public\\.app_campaigns from public, anon, authenticated/i);
+  assert.match(migration, /revoke all on table public\.app_campaigns from public, anon, authenticated/i);
   assert.match(migration, /grant execute on function public\.app_create_campaign\(jsonb,jsonb\) to service_role/i);
 });
 
@@ -26,7 +26,7 @@ test('campaign mutations append tamper-evident audit events in the same database
   assert.match(migration, /digest\(convert_to\(v_previous_hash/i);
   assert.match(migration, /perform public\.app_append_audit_event\([\s\S]*CAMPAIGN_CREATED/i);
   assert.match(migration, /perform public\.app_append_audit_event\([\s\S]*CAMPAIGN_STATUS_UPDATED/i);
-  assert.match(migration, /revoke all on table public\\.app_audit_events from public, anon, authenticated/i);
+  assert.match(migration, /revoke all on table public\.app_audit_events from public, anon, authenticated/i);
 });
 
 test('Vercel blocks writes for domains not yet backed by durable repositories after authentication', async () => {
