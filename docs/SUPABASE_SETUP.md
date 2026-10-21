@@ -122,3 +122,17 @@ The branch includes a Vercel serverless catch-all at `api/[...path].ts`. Vercel 
 - Add comprehensive tests for Supabase token expiry/revocation, invitation and membership lifecycle, cross-tenant access, and role changes.
 - Real ad-provider OAuth/publishing, budget writes, pausing, and provider-side verification are not implemented. Never use live budgets during this stage.
 - Browser E2E tests must be run against a dedicated staging project before production release.
+
+## Customer-facing product walkthrough
+
+The app now includes a **Product Demo** workspace view with a guided five-chapter tour: channel setup, campaign planning, creative review, budget governance, and analytics/AI assistance. If no video URL is configured, it renders an interactive storyboard so the walkthrough is still usable.
+
+To embed your own short narrated recording in the video player:
+
+1. Record a sanitized 2-minute walkthrough using fictional/demo data only. Never show API tokens, service-role keys, real customer details, or live account IDs.
+2. Host the MP4 on an HTTPS endpoint or publish it using YouTube/Vimeo.
+3. In Vercel → Project → Settings → Environment Variables, add `VITE_PRODUCT_DEMO_VIDEO_URL` for the intended environment. Supported sources are HTTPS MP4 URLs, YouTube watch/short links, and Vimeo video links.
+4. Redeploy the environment. The variable is embedded into the public frontend bundle, so it must contain only the public video URL, never a secret.
+5. Open **Product Demo** in the left navigation and test the player, chapter controls, keyboard focus, and mobile layout.
+
+This code change provides the product walkthrough UI and video player integration; it does not fabricate a recording or claim that a narrated video has been published. Until you configure a video URL, the interactive guided walkthrough is shown.
