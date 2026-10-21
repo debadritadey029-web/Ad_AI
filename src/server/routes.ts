@@ -913,11 +913,11 @@ apiRouter.post('/campaigns', async (req: ContextRequest, res: Response) => {
 
   if (isDurableCampaignPersistenceEnabled()) {
     try {
-      const persistedCampaign = await createDurableCampaign(newCampaign);
+      const persistedCampaign = await createDurableCampaign(newCampaign, { userId: user.id, email: user.email, role: membership.role });
       globalStore.campaigns.set(id, persistedCampaign);
       Object.assign(newCampaign, persistedCampaign);
-      // The local cache is only a request-process convenience; PostgreSQL is the
-      // source of truth. Audit persistence for this mutation is being migrated next.
+      // The local cache is only a request-process convenience; PostgreSQL and its
+      // hash-chained audit event were committed atomically by the RPC.
     } catch (error) {
       console.error('[CampaignRepository] create failed', error instanceof CampaignRepositoryError ? error.code : 'UNEXPECTED_ERROR');
       const status = error instanceof CampaignRepositoryError && error.code === 'CONFLICT' ? 409 : 503;
@@ -996,7 +996,8 @@ apiRouter.patch('/campaigns/:id/status', async (req: ContextRequest, res: Respon
         org.id,
         id,
         campaign.version,
-        status as Exclude<CampaignStatus, 'ACTIVE'>
+        status as Exclude<CampaignStatus, 'ACTIVE'>,
+        { userId: user.id, email: user.email, role: membership.role }
       );
       globalStore.campaigns.set(id, campaign);
     } catch (error) {
