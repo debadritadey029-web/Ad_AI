@@ -124,20 +124,71 @@ async function resolveContext(req: ContextRequest, res: Response, next: NextFunc
       });
     }
 
-    user = globalStore.users.get(identity.appUserId);
-    org = globalStore.organizations.get(identity.organizationId);
-    if (!user || user.email.trim().toLowerCase() !== identity.email) {
+    const provisionedUser = identity.appUser;
+    user = globalStore.users.get(provisionedUser.id);
+    if (user && user.email.trim().toLowerCase() !== identity.email) {
       return res.status(403).json({
-        error: 'APP_ACCOUNT_NOT_PROVISIONED',
-        message: 'Your Supabase account is not yet provisioned in AdVantage AI. Ask your organization administrator.',
+        error: 'APP_ACCOUNT_EMAIL_MISMATCH',
+        message: 'The signed-in email does not match the provisioned AdVantage AI account.',
       });
     }
+    if (!user) {
+      user = {
+        id: provisionedUser.id,
+        email: provisionedUser.email,
+        name: provisionedUser.name,
+        phone: provisionedUser.phone,
+        avatarUrl: provisionedUser.avatarUrl,
+        createdAt: provisionedUser.createdAt,
+      };
+      globalStore.users.set(user.id, user);
+    }
+
+    const provisionedOrg = identity.organization;
+    org = globalStore.organizations.get(provisionedOrg.id);
+    if (!org) {
+      const settings = provisionedOrg.settings || {};
+      org = {
+        id: provisionedOrg.id,
+        name: provisionedOrg.name,
+        slug: provisionedOrg.slug,
+        tier: (['ENTERPRISE', 'GROWTH', 'STARTER'].includes(provisionedOrg.tier) ? provisionedOrg.tier : 'STARTER') as Organization['tier'],
+        defaultCurrency: provisionedOrg.defaultCurrency,
+        emergencyStopActive: provisionedOrg.emergencyStopActive,
+        emergencyStopReason: provisionedOrg.emergencyStopReason,
+        emergencyStopTriggeredAt: provisionedOrg.emergencyStopTriggeredAt,
+        emergencyStopTriggeredBy: provisionedOrg.emergencyStopTriggeredBy,
+        settings: {
+          budgetChangeApprovalThresholdMinorUnits: Number(settings.budgetChangeApprovalThresholdMinorUnits ?? 50000),
+          dailySpendCeilingMinorUnits: Number(settings.dailySpendCeilingMinorUnits ?? 200000),
+          monthlySpendCeilingMinorUnits: Number(settings.monthlySpendCeilingMinorUnits ?? 5000000),
+          requireFourEyesApproval: settings.requireFourEyesApproval !== false,
+          brandSafetyStrictness: (['STRICT', 'STANDARD', 'LENIENT'].includes(String(settings.brandSafetyStrictness)) ? settings.brandSafetyStrictness : 'STRICT') as Organization['settings']['brandSafetyStrictness'],
+        },
+        createdAt: provisionedOrg.createdAt,
+      };
+      globalStore.organizations.set(org.id, org);
+    }
+
+    const provisionedMembership = identity.membership;
     membership = Array.from(globalStore.memberships.values()).find(
-      (m) => m.userId === user!.id &&
-        m.orgId === identity.organizationId &&
-        m.status === 'ACTIVE' &&
-        m.role === identity.role
+      (m) => m.userId === user!.id && m.orgId === provisionedMembership.orgId
     );
+    if (!membership) {
+      membership = {
+        id: provisionedMembership.id,
+        userId: provisionedMembership.userId,
+        orgId: provisionedMembership.orgId,
+        role: provisionedMembership.role as Membership['role'],
+        status: 'ACTIVE',
+        joinedAt: provisionedMembership.joinedAt,
+      };
+      globalStore.memberships.set(membership.id, membership);
+    } else {
+      // The server-side database membership is authoritative for role and active status.
+      membership.role = provisionedMembership.role as Membership['role'];
+      membership.status = 'ACTIVE';
+    }
   }
 
   if (!org) {
