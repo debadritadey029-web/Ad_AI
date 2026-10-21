@@ -63,3 +63,11 @@ Only campaign list/create/status is moved to normalized durable persistence in t
 - Apply `supabase/migrations/20261021_harden_auth_and_rls.sql` before using this flow. It removes old permissive `USING (true)` policies and revokes browser-role table access.
 - Setup and controlled staging account provisioning steps are in `docs/SUPABASE_SETUP.md`.
 - This is not a production certification. Full durable tenant data migration and browser E2E remain release gates.
+
+
+## Customer demo and security-workflow follow-up
+
+- Added a guided Product Demo view with five chapters and an optional hosted video player. Configure `VITE_PRODUCT_DEMO_VIDEO_URL` as a public HTTPS video URL; it is a frontend build variable, not a secret.
+- The guided tour labels important boundaries: drafts are not live campaigns, and the current app does not execute live provider-side budget changes. Use sanitized fictional data in any public recording.
+- CodeQL can still analyze the code when GitHub code-scanning upload is unavailable. The workflow uploads SARIF only when the repository variable `CODE_SCANNING_ENABLED` is explicitly set to `true`; enable it only after GitHub code scanning is available for this repository. Without upload entitlement, analysis runs but results are not published to the Security tab.
+- A passing typecheck/build or a static migration-contract test does not replace staging browser E2E or security review.
