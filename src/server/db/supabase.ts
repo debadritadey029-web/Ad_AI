@@ -153,10 +153,10 @@ export async function resolveSupabaseProvisionedIdentity(
     const normalizedEmail = authUser.email.trim().toLowerCase();
     const { data: appUser, error: userError } = await client
       .from('users')
-      .select('id,email')
-      .eq('email', normalizedEmail)
+      .select('id,email,auth_user_id')
+      .eq('auth_user_id', authUser.id)
       .maybeSingle();
-    if (userError || !appUser?.id) return null;
+    if (userError || !appUser?.id || String(appUser.email).trim().toLowerCase() !== normalizedEmail) return null;
 
     let membershipQuery = client
       .from('memberships')
