@@ -175,11 +175,12 @@ apiRouter.post('/auth/otp/send', authLimiter, (req: Request, res: Response) => {
     }
   }
 
-  // OTP delivery is not integrated yet. Do not claim a message was sent or expose a code in production.
-  if (isProduction()) {
+  // No email/SMS adapter exists yet. Only allow the explicit development-code path in
+  // isolated non-production environments; otherwise do not claim delivery succeeded.
+  if (isProduction() || !shouldExposeDevOtpCode()) {
     return res.status(503).json({
       error: 'OTP_DELIVERY_NOT_CONFIGURED',
-      message: 'Secure email/SMS delivery is not configured. Sign-in by OTP is temporarily unavailable.',
+      message: 'Secure email/SMS delivery is not configured. OTP sign-in is unavailable unless development OTP codes are explicitly enabled in isolated staging.',
     });
   }
 
@@ -310,11 +311,11 @@ apiRouter.post('/auth/login-step1', authLimiter, (req: Request, res: Response) =
 
   // Check if 2FA is enabled (true for all enterprise users by default)
   if (user.twoFactorEnabled !== false) {
-    // No delivery adapter is configured yet; fail closed rather than returning an OTP to the client.
-    if (isProduction()) {
+    // No delivery adapter exists yet. Only allow explicitly enabled staging OTP codes.
+    if (isProduction() || !shouldExposeDevOtpCode()) {
       return res.status(503).json({
         error: 'OTP_DELIVERY_NOT_CONFIGURED',
-        message: 'Secure email/SMS delivery is not configured. Two-factor sign-in is temporarily unavailable.',
+        message: 'Secure email/SMS delivery is not configured. Two-factor sign-in is unavailable unless development OTP codes are explicitly enabled in isolated staging.',
       });
     }
     const channel: 'email' | 'phone' =
