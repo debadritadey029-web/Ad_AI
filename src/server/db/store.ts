@@ -28,6 +28,10 @@ import { scryptSync } from 'node:crypto';
 export type { DataStore };
 
 export function persistCurrentStore(): void {
+  // Vercel instances are ephemeral and can execute concurrently. A whole-state
+  // JSON snapshot is not a durable database and last-writer-wins upserts can erase
+  // another instance's changes. Serverless writes must use a domain repository.
+  if (process.env.VERCEL) return;
   PersistenceManager.getInstance().scheduleSave(globalStore);
   void saveSupabaseSnapshot(serializeDataStore(globalStore));
 }
@@ -624,6 +628,8 @@ export function initializeStore(): DataStore {
 }
 
 export function seedTestSessions(store: DataStore): void {
+  // Static tester tokens are intentionally unavailable in production.
+  if (process.env.NODE_ENV === 'production') return;
   const expiry = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(); // 30 days for testing
 
   const testerSessions: Session[] = [

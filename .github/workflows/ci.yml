@@ -2,7 +2,7 @@ name: CI/CD Pipeline (Zero Docker)
 
 on:
   push:
-    branches: [ main, master, 20_10_dev ]
+    branches: [ main, master, 20_10_dev, fix/critical-auth-tenant-security ]
   pull_request:
     branches: [ main, master, 20_10_dev ]
 

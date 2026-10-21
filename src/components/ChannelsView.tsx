@@ -48,8 +48,12 @@ export const ChannelsView: React.FC = () => {
     try {
       setSyncingId(conn.id);
       const res = await authFetch(`/api/providers/${conn.id}/sync`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         showToast(`Synced ${conn.accountName} successfully!`, 'success');
+        fetchProviders();
+      } else {
+        showToast(data.message || data.error || 'Live provider sync is not configured', 'error');
         fetchProviders();
       }
     } catch {
@@ -174,10 +178,12 @@ export const ChannelsView: React.FC = () => {
                     Adapter implemented. Official OAuth approval or credentials required for live synchronization.
                   </p>
                   <button
-                    onClick={() => showToast(`OAuth flow for ${cap.displayName} initiated (Sandbox/Demo Mode)`, 'info')}
-                    className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-blue-400 text-xs font-semibold rounded-lg transition"
+                    type="button"
+                    disabled
+                    title="OAuth credentials and callback configuration are required before this connector can be enabled."
+                    className="w-full py-1.5 bg-slate-800 text-slate-500 text-xs font-semibold rounded-lg cursor-not-allowed"
                   >
-                    Connect Account
+                    OAuth setup required
                   </button>
                 </div>
               )}

@@ -122,3 +122,130 @@ export async function saveSupabaseSnapshot(snapshot: SerializedDataStore): Promi
 
   return true;
 }
+
+
+export interface SupabaseProvisionedIdentity {
+  authUserId: string;
+  email: string;
+  appUser: {
+    id: string;
+    email: string;
+    name: string;
+    phone?: string;
+    avatarUrl?: string;
+    createdAt: string;
+  };
+  organization: {
+    id: string;
+    name: string;
+    slug: string;
+    tier: string;
+    defaultCurrency: string;
+    emergencyStopActive: boolean;
+    emergencyStopReason?: string;
+    emergencyStopTriggeredAt?: string;
+    emergencyStopTriggeredBy?: string;
+    settings: Record<string, unknown>;
+    createdAt: string;
+  };
+  membership: {
+    id: string;
+    userId: string;
+    orgId: string;
+    role: string;
+    status: string;
+    joinedAt: string;
+  };
+}
+
+/**
+ * Verifies a Supabase access token with Auth and loads its explicitly provisioned
+ * application account and ACTIVE tenant membership from the server-only database client.
+ */
+export async function resolveSupabaseProvisionedIdentity(
+  accessToken: string,
+  requestedOrganizationId?: string
+): Promise<SupabaseProvisionedIdentity | null> {
+  const client = getOrCreateServerClient();
+  if (!client || !accessToken) return null;
+
+  try {
+    const { data: authData, error: authError } = await client.auth.getUser(accessToken);
+    const authUser = authData?.user;
+    if (authError || !authUser?.id || !authUser.email || !authUser.email_confirmed_at) return null;
+
+    const normalizedEmail = authUser.email.trim().toLowerCase();
+    const { data: appUser, error: userError } = await client
+      .from('users')
+      .select('id,email,name,phone,avatar_url,created_at,auth_user_id')
+      .eq('auth_user_id', authUser.id)
+      .maybeSingle();
+    if (userError || !appUser?.id || String(appUser.email).trim().toLowerCase() !== normalizedEmail) return null;
+
+    let membershipQuery = client
+      .from('memberships')
+      .select('id,user_id,org_id,role,status,created_at')
+      .eq('user_id', appUser.id)
+      .eq('status', 'ACTIVE');
+    if (requestedOrganizationId) membershipQuery = membershipQuery.eq('org_id', requestedOrganizationId);
+
+    const { data: memberships, error: membershipError } = await membershipQuery.limit(50);
+    if (membershipError || !memberships?.length) return null;
+
+    for (const membership of memberships) {
+      const { data: organization, error: organizationError } = await client
+        .from('organizations')
+        .select('id,name,slug,tier,default_currency,emergency_stop_active,emergency_stop_reason,emergency_stop_triggered_at,emergency_stop_triggered_by,settings,created_at')
+        .eq('id', membership.org_id)
+        .maybeSingle();
+      if (organizationError || !organization?.id) continue;
+
+      // The normalized controls table is authoritative when the finance migration
+      // is installed. If it is not yet installed, retain the legacy organization
+      // fields for authentication/context only; protected finance writes still fail closed.
+      const { data: controls } = await client
+        .from('app_org_controls')
+        .select('emergency_stop_active,emergency_stop_reason,emergency_stop_triggered_at,emergency_stop_triggered_by,policy')
+        .eq('org_id', membership.org_id)
+        .maybeSingle();
+
+      return {
+        authUserId: authUser.id,
+        email: normalizedEmail,
+        appUser: {
+          id: String(appUser.id),
+          email: normalizedEmail,
+          name: String(appUser.name || normalizedEmail),
+          phone: appUser.phone ? String(appUser.phone) : undefined,
+          avatarUrl: appUser.avatar_url ? String(appUser.avatar_url) : undefined,
+          createdAt: String(appUser.created_at || new Date().toISOString()),
+        },
+        organization: {
+          id: String(organization.id),
+          name: String(organization.name),
+          slug: String(organization.slug),
+          tier: String(organization.tier || 'STARTER'),
+          defaultCurrency: String(organization.default_currency || 'USD'),
+          emergencyStopActive: Boolean(controls?.emergency_stop_active ?? organization.emergency_stop_active),
+          emergencyStopReason: (controls?.emergency_stop_reason ?? organization.emergency_stop_reason) ? String(controls?.emergency_stop_reason ?? organization.emergency_stop_reason) : undefined,
+          emergencyStopTriggeredAt: (controls?.emergency_stop_triggered_at ?? organization.emergency_stop_triggered_at) ? String(controls?.emergency_stop_triggered_at ?? organization.emergency_stop_triggered_at) : undefined,
+          emergencyStopTriggeredBy: (controls?.emergency_stop_triggered_by ?? organization.emergency_stop_triggered_by) ? String(controls?.emergency_stop_triggered_by ?? organization.emergency_stop_triggered_by) : undefined,
+          settings: (controls?.policy || organization.settings || {}) as Record<string, unknown>,
+          createdAt: String(organization.created_at || new Date().toISOString()),
+        },
+        membership: {
+          id: String(membership.id),
+          userId: String(membership.user_id),
+          orgId: String(membership.org_id),
+          role: String(membership.role),
+          status: String(membership.status),
+          joinedAt: String(membership.created_at || new Date().toISOString()),
+        },
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error('[Supabase Auth] Access-token validation failed:', error);
+    return null;
+  }
+}

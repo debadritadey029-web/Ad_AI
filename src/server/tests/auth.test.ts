@@ -143,3 +143,20 @@ test('Auth 2FA: Two-step challenge lifecycle for password credentials', () => {
   assert.equal(res.session?.userId, 'usr_sarah');
 });
 
+
+test('Auth: sessions cannot be issued without an active user organization membership', () => {
+  assert.throws(
+    () => createSession({ userId: 'usr_not_registered', activeOrgId: 'org_apex' }),
+    /ACTIVE_MEMBERSHIP_REQUIRED/
+  );
+});
+
+test('Auth OTP: a code cannot be reused for a different purpose', () => {
+  const sent = sendOtp({ target: 'purpose.test@example.com', channel: 'email', purpose: 'PHONE_VERIFY' });
+  assert.ok(sent.devCode);
+  const mismatch = verifyOtp({ target: 'purpose.test@example.com', code: sent.devCode!, channel: 'email', purpose: 'OTP_LOGIN' });
+  assert.equal(mismatch.success, false);
+  assert.equal(mismatch.error, 'OTP_PURPOSE_MISMATCH');
+  const correctPurpose = verifyOtp({ target: 'purpose.test@example.com', code: sent.devCode!, channel: 'email', purpose: 'PHONE_VERIFY' });
+  assert.equal(correctPurpose.success, true);
+});
