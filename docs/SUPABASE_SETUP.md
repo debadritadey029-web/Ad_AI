@@ -136,3 +136,22 @@ To embed your own short narrated recording in the video player:
 5. Open **Product Demo** in the left navigation and test the player, chapter controls, keyboard focus, and mobile layout.
 
 This code change provides the product walkthrough UI and video player integration; it does not fabricate a recording or claim that a narrated video has been published. Until you configure a video URL, the interactive guided walkthrough is shown.
+
+
+## Transactional finance approvals migration
+
+After applying the campaign migration, run `supabase/migrations/20261023_durable_finance_workflows.sql` in the same Supabase SQL Editor. It creates tenant-scoped budget proposal records and organization control records, with server-only access and transactional PostgreSQL functions for proposal creation and review.
+
+- Finance proposal reads/writes use the durable repository when the server-side Supabase service-role configuration is present.
+- Proposal creation checks active membership, role, positive budget, organization ceiling, emergency stop, and the current campaign record/version.
+- Review checks the active tenant membership and approval role; the four-eyes rule blocks self-approval; campaign-version drift marks a proposal stale.
+- Approval/rejection, campaign budget mutation, proposal state, and the hash-chained audit event are committed inside the same database transaction.
+- Approval updates the AdVantage AI draft budget record only. It does **not** send a live budget update to Meta, Google, TikTok or another provider.
+- Organization settings changes and emergency-stop state still need their own fully durable workflows; do not treat the finance migration as closing all production-readiness blockers.
+
+Migration order:
+1. `20261021_harden_auth_and_rls.sql`
+2. `20261022_normalized_campaign_persistence.sql`
+3. `20261023_durable_finance_workflows.sql`
+
+Never run a later migration before its prerequisite tables/functions exist. Review each SQL migration and apply it to the isolated staging project first.
