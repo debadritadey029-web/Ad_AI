@@ -147,7 +147,7 @@ After applying the campaign migration, run `supabase/migrations/20261023_durable
 - Review checks the active tenant membership and approval role; the four-eyes rule blocks self-approval; campaign-version drift marks a proposal stale.
 - Approval/rejection, campaign budget mutation, proposal state, and the hash-chained audit event are committed inside the same database transaction.
 - Approval updates the AdVantage AI draft budget record only. It does **not** send a live budget update to Meta, Google, TikTok or another provider.
-- Organization settings changes and emergency-stop state still need their own fully durable workflows; do not treat the finance migration as closing all production-readiness blockers.
+- Emergency-stop trigger/release is persisted by this migration and pauses internal campaign records transactionally; it does not call provider APIs. Editing organization financial-policy settings still needs its own fully durable workflow. Do not treat this migration as closing all production-readiness blockers.
 
 Migration order:
 1. `20261021_harden_auth_and_rls.sql`
