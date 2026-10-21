@@ -67,7 +67,7 @@ returns void
 language plpgsql
 security definer
 set search_path = pg_catalog, public
-as $
+as $$
 declare
   v_previous_hash text;
   v_payload jsonb;
@@ -101,7 +101,7 @@ begin
     v_previous_hash, v_event_hash
   );
 end;
-$;
+$$;
 revoke all on function public.app_append_audit_event(text,jsonb,text,text,text,jsonb) from public, anon, authenticated;
 grant execute on function public.app_append_audit_event(text,jsonb,text,text,text,jsonb) to service_role;
 
@@ -158,7 +158,7 @@ begin
   );
   return next v_row;
 end;
-$;
+$$;
 
 create or replace function public.app_update_campaign_status(
   p_org_id text,
@@ -205,7 +205,7 @@ begin
   );
   return next v_row;
 end;
-$;
+$$;
 
 revoke all on function public.app_create_campaign(jsonb,jsonb) from public, anon, authenticated;
 revoke all on function public.app_update_campaign_status(text,text,integer,text,jsonb) from public, anon, authenticated;
