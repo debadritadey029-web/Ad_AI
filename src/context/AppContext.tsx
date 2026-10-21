@@ -218,7 +218,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     try {
       const res = await authFetch('/api/auth/switch-context', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-organization-id': orgId },
         body: JSON.stringify({ orgId }),
       });
       if (res.ok) {
