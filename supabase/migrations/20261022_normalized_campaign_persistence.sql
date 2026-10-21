@@ -37,7 +37,8 @@ create index if not exists idx_app_campaigns_org_status
   on public.app_campaigns (org_id, status, updated_at desc);
 
 alter table public.app_campaigns enable row level security;
-revoke all on table public.app_campaigns from anon, authenticated;
+revoke all on table public.app_campaigns from public, anon, authenticated;
+grant select on table public.app_campaigns to service_role;
 
 create table if not exists public.app_audit_events (
   sequence_id bigint generated always as identity primary key,
